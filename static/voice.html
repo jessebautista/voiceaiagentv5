@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<!-- static/voice.html — Live Connect: voice assistant with welcome message, then speak and get spoken replies. -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Live Connect — Voice Assistant</title>
+  <style>
+    :root {
+      --bg: #0d0d10;
+      --surface: #16161c;
+      --border: #2a2a32;
+      --text: #e8e8ed;
+      --muted: #8888a0;
+      --accent: #6366f1;
+      --accent-hover: #818cf8;
+      --recording: #ef4444;
+      --success: #22c55e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "DM Sans", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    h1 { font-size: 1.5rem; margin: 0 0 0.5rem; }
+    p.sub { color: var(--muted); font-size: 0.9rem; margin: 0 0 2rem; }
+    .status {
+      min-height: 1.5rem;
+      color: var(--muted);
+      font-size: 0.85rem;
+      margin-bottom: 1rem;
+      text-align: center;
+    }
+    .status.recording { color: var(--recording); }
+    .status.speaking { color: var(--accent); }
+    .status.success { color: var(--success); }
+    .btn {
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      border: 3px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .btn:hover { border-color: var(--accent); background: var(--accent); transform: scale(1.02); }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+    .btn.recording { border-color: var(--recording); background: var(--recording); animation: pulse 1s infinite; }
+    @keyframes pulse { 50% { opacity: 0.85; } }
+    .transcript {
+      max-width: 420px;
+      width: 100%;
+      margin-top: 2rem;
+      padding: 1rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      font-size: 0.9rem;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .transcript .you { color: var(--accent); margin-bottom: 0.5rem; }
+    .transcript .agent { color: var(--muted); }
+    a.back { color: var(--muted); font-size: 0.85rem; margin-top: 1.5rem; }
+    a.back:hover { color: var(--text); }
+  </style>
+</head>
+<body>
+  <h1>Live Connect</h1>
+  <p class="sub">Talk to your virtual assistant</p>
+  <div class="status" id="status">Loading…</div>
+  <button type="button" class="btn" id="btn" disabled>Start</button>
+  <div class="transcript" id="transcript"></div>
+  <a href="/" class="back">← Back to chat</a>
+
+  <script>
+    const API = window.location.origin;
+    const sessionId = "voice-" + Math.random().toString(36).slice(2, 12);
+    const statusEl = document.getElementById("status");
+    const btnEl = document.getElementById("btn");
+    const transcriptEl = document.getElementById("transcript");
+
+    function setStatus(msg, className = "") {
+      statusEl.textContent = msg;
+      statusEl.className = "status" + (className ? " " + className : "");
+    }
+
+    let mediaRecorder = null;
+    let audioChunks = [];
+
+    async function playWelcome() {
+      setStatus("Playing welcome…", "speaking");
+      try {
+        const r = await fetch(API + "/voice/welcome");
+        if (!r.ok) throw new Error("Welcome audio failed");
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        await new Promise((resolve, reject) => {
+          audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
+          audio.onerror = reject;
+          audio.play();
+        });
+        setStatus("Tap the button and speak", "success");
+      } catch (e) {
+        setStatus("Welcome failed: " + e.message);
+      }
+    }
+
+    function startRecording() {
+      audioChunks = [];
+      navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+        mediaRecorder = new MediaRecorder(stream);
+        mediaRecorder.ondataavailable = (e) => { if (e.data.size) audioChunks.push(e.data); };
+        mediaRecorder.onstop = () => {
+          stream.getTracks().forEach((t) => t.stop());
+          const blob = new Blob(audioChunks, { type: "audio/webm" });
+          handleAudio(blob);
+        };
+        mediaRecorder.start();
+        setStatus("Listening…", "recording");
+        btnEl.textContent = "Stop";
+        btnEl.classList.add("recording");
+      }).catch((e) => {
+        setStatus("Microphone error: " + e.message);
+      });
+    }
+
+    function stopRecording() {
+      if (mediaRecorder && mediaRecorder.state !== "inactive") {
+        mediaRecorder.stop();
+      }
+      btnEl.textContent = "Speak";
+      btnEl.classList.remove("recording");
+    }
+
+    async function handleAudio(blob) {
+      setStatus("Processing…");
+      btnEl.disabled = true;
+      try {
+        const form = new FormData();
+        form.append("file", blob, "audio.webm");
+        const sttRes = await fetch(API + "/voice/stt", { method: "POST", body: form });
+        if (!sttRes.ok) throw new Error("Speech recognition failed");
+        const { text } = await sttRes.json();
+        if (!text || !text.trim()) {
+          setStatus("No speech detected. Try again.");
+          btnEl.disabled = false;
+          return;
+        }
+        addToTranscript("you", text);
+        setStatus("Thinking…");
+        const chatRes = await fetch(API + "/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId, message: text }),
+        });
+        const chatData = await chatRes.json();
+        const reply = chatData.error ? "Sorry, something went wrong." : (chatData.reply || "");
+        if (reply) addToTranscript("agent", reply);
+        setStatus("Speaking…", "speaking");
+        const ttsRes = await fetch(API + "/voice/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: reply }),
+        });
+        if (ttsRes.ok) {
+          const audioBlob = await ttsRes.blob();
+          const url = URL.createObjectURL(audioBlob);
+          const audio = new Audio(url);
+          await new Promise((resolve, reject) => {
+            audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
+            audio.onerror = resolve;
+            audio.play();
+          });
+        }
+        setStatus("Tap the button and speak again", "success");
+      } catch (e) {
+        setStatus("Error: " + e.message);
+      }
+      btnEl.disabled = false;
+    }
+
+    function addToTranscript(role, text) {
+      const div = document.createElement("div");
+      div.className = role;
+      div.textContent = (role === "you" ? "You: " : "Agent: ") + text;
+      transcriptEl.appendChild(div);
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    }
+
+    btnEl.addEventListener("click", () => {
+      if (mediaRecorder && mediaRecorder.state === "recording") {
+        stopRecording();
+      } else {
+        startRecording();
+      }
+    });
+
+    window.addEventListener("load", () => {
+      btnEl.textContent = "Speak";
+      playWelcome().then(() => { btnEl.disabled = false; });
+    });
+  </script>
+</body>
+</html>

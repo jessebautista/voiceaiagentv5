@@ -13,8 +13,9 @@ Set these up before running the project so your team can run it from scratch.
 | **Upstash Redis** | No | Persistent chat memory | Optional. Create a Redis DB at [Upstash](https://console.upstash.com/), then copy the REST URL and token into `.env` as `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`. |
 | **Redis (standard)** | No | Alternative to Upstash | Optional. Use [redis.io](https://redis.io/docs/install/) or [Redis Cloud](https://redis.com/try-free/). Set `REDIS_URL` in `.env`. |
 | **Pinecone** | No | Vector FAQ search (RAG) | Optional; only if you add RAG over PDFs. Sign up at [pinecone.io](https://www.pinecone.io/), create an index, and set `PINECONE_API_KEY` and `PINECONE_INDEX` in `.env`. |
+| **ElevenLabs** | No | Voice (Live Connect) | Optional. Get an API key at [ElevenLabs](https://elevenlabs.io/app/settings/api-keys). Set `ELEVENLABS_API_KEY` in `.env`. See [Voice (Live Connect)](#voice-live-connect) below. |
 
-**Minimum to run:** Python 3.9+ and a valid **OpenAI API key**. Redis and Pinecone are optional.
+**Minimum to run:** Python 3.9+ and a valid **OpenAI API key**. Redis, Pinecone, and ElevenLabs are optional.
 
 ## Structure
 
@@ -103,6 +104,17 @@ This populates Upstash with:
 - **`agent:chat:seed-sample-session`** — Sample conversation in the same format the app uses for chat history (7-day TTL).
 
 You can inspect and reuse these keys in the Upstash dashboard or in your app.
+
+## Voice (Live Connect)
+
+On the **feature/voice-elevenlabs** branch, a voice assistant is available at **/voice**. Flow:
+
+1. Open [http://localhost:8000/voice](http://localhost:8000/voice).
+2. The app plays a welcome message (e.g. “Good morning, how can I help you?”) using ElevenLabs TTS.
+3. Tap **Speak**, say your question, then tap **Stop**. Your speech is sent to ElevenLabs STT → agent → ElevenLabs TTS, and the reply is played back.
+4. Repeat as needed; the same chat session is used so the agent keeps context.
+
+**Required:** `ELEVENLABS_API_KEY` in `.env` (get it from [ElevenLabs](https://elevenlabs.io/app/settings/api-keys)). Optional: `ELEVENLABS_VOICE_ID` to choose a different voice.
 
 ## Optional
 

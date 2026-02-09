@@ -4,6 +4,7 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 pydantic>=2.0.0
+python-multipart>=0.0.9
 
 # LangChain & LangGraph
 langchain>=0.3.0
@@ -21,6 +22,9 @@ python-dotenv>=1.0.0
 # Optional: Vector store + embeddings for RAG (uncomment for full FAQ from PDF)
 # langchain-community>=0.3.0
 # pypdf>=4.0.0
+
+# Voice (Live Connect — ElevenLabs)
+elevenlabs>=1.0.0
 
 # Tests
 pytest>=8.0.0

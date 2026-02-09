@@ -21,13 +21,15 @@ enable_langsmith()
 import logging
 logger = logging.getLogger("app.main")
 
-from fastapi import FastAPI
+import asyncio
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app.agent import get_agent_response
+from app import voice_elevenlabs as voice
 
 
 class ChatRequest(BaseModel):
@@ -62,7 +64,16 @@ async def root():
     index_path = STATIC_DIR / "index.html"
     if index_path.exists():
         return FileResponse(index_path)
-    return {"message": "AI Agent API", "docs": "/docs", "chat": "POST /chat"}
+    return {"message": "AI Agent API", "docs": "/docs", "chat": "POST /chat", "voice": "/voice"}
+
+
+@app.get("/voice")
+async def voice_page():
+    """Serve the Live Connect voice assistant page."""
+    voice_path = STATIC_DIR / "voice.html"
+    if voice_path.exists():
+        return FileResponse(voice_path)
+    raise HTTPException(status_code=404, detail="Voice page not found")
 
 
 @app.get("/health")
@@ -89,6 +100,55 @@ async def chat(body: ChatRequest):
     except Exception as e:
         logger.exception("Chat error | session_id=%s", body.session_id)
         return {"reply": "", "error": str(e)}
+
+
+# ----- Voice (Live Connect) -----
+
+class TTSRequest(BaseModel):
+    """Request body for /voice/tts."""
+    text: str
+
+
+@app.get("/voice/welcome")
+async def voice_welcome():
+    """
+    Returns audio (MP3) of the welcome phrase for Live Connect.
+    Time-based: e.g. 'Good morning, how can I help you?'
+    """
+    phrase = voice.get_welcome_phrase()
+    loop = asyncio.get_event_loop()
+    audio_bytes = await loop.run_in_executor(None, lambda: voice.text_to_speech(phrase))
+    if not audio_bytes:
+        raise HTTPException(status_code=503, detail="ElevenLabs TTS not configured or failed. Set ELEVENLABS_API_KEY.")
+    return Response(content=audio_bytes, media_type="audio/mpeg")
+
+
+@app.post("/voice/tts")
+async def voice_tts(body: TTSRequest):
+    """Convert text to speech. Returns MP3 bytes."""
+    if not body.text or not body.text.strip():
+        raise HTTPException(status_code=400, detail="text is required")
+    loop = asyncio.get_event_loop()
+    audio_bytes = await loop.run_in_executor(None, lambda: voice.text_to_speech(body.text))
+    if not audio_bytes:
+        raise HTTPException(status_code=503, detail="ElevenLabs TTS not configured or failed.")
+    return Response(content=audio_bytes, media_type="audio/mpeg")
+
+
+@app.post("/voice/stt")
+async def voice_stt(file: UploadFile = File(...)):
+    """Convert uploaded audio to text. Accepts audio/webm, audio/mpeg, etc."""
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="No audio data")
+    content_type = file.content_type or "audio/webm"
+    loop = asyncio.get_event_loop()
+    text = await loop.run_in_executor(
+        None, lambda: voice.speech_to_text(audio_bytes, content_type=content_type)
+    )
+    if text is None:
+        raise HTTPException(status_code=503, detail="ElevenLabs STT failed or not configured.")
+    return {"text": text}
 
 
 if __name__ == "__main__":
