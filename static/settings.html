@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<!-- static/settings.html — Voice and app settings. Stored in localStorage. -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Settings — Live Connect</title>
+  <style>
+    :root {
+      --bg: #0d0d10;
+      --surface: #16161c;
+      --border: #2a2a32;
+      --text: #e8e8ed;
+      --muted: #8888a0;
+      --accent: #6366f1;
+      --success: #22c55e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "DM Sans", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 1.5rem 1.5rem 2rem;
+      max-width: 420px;
+      margin: 0 auto;
+    }
+    h1 { font-size: 1.35rem; margin: 0 0 0.25rem; }
+    p.sub { color: var(--muted); font-size: 0.875rem; margin: 0 0 1.5rem; }
+    section { margin-bottom: 1.5rem; }
+    section h2 { font-size: 0.95rem; color: var(--muted); margin: 0 0 0.75rem; font-weight: 600; }
+    label { display: block; margin-bottom: 0.5rem; font-size: 0.9rem; }
+    input[type="number"] {
+      width: 100%;
+      max-width: 120px;
+      padding: 0.5rem 0.75rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 1rem;
+    }
+    input[type="checkbox"] { margin-right: 0.5rem; accent-color: var(--accent); }
+    .row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
+    .hint { font-size: 0.8rem; color: var(--muted); margin-top: 0.35rem; }
+    .btn {
+      padding: 0.6rem 1.25rem;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.95rem;
+    }
+    .btn:hover { filter: brightness(1.1); }
+    .toast {
+      position: fixed;
+      bottom: 1.5rem;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 0.6rem 1rem;
+      background: var(--success);
+      color: #0d0d10;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      opacity: 0;
+      transition: opacity 0.2s;
+      pointer-events: none;
+    }
+    .toast.show { opacity: 1; }
+    a.back { color: var(--muted); font-size: 0.85rem; margin-top: 1rem; display: inline-block; }
+    a.back:hover { color: var(--text); }
+  </style>
+</head>
+<body>
+  <h1>Settings</h1>
+  <p class="sub">Voice assistant and Live Connect options</p>
+
+  <section>
+    <h2>Voice (phone-call mode)</h2>
+    <label for="silence">Pause after you speak (seconds)</label>
+    <input type="number" id="silence" min="0.5" max="10" step="0.5" value="2" />
+    <p class="hint">After this many seconds of silence, your turn is sent to the agent. Default: 2.</p>
+
+    <div class="row" style="margin-top: 1rem;">
+      <input type="checkbox" id="autoResume" checked />
+      <label for="autoResume" style="margin: 0;">Auto-resume listening after the agent speaks</label>
+    </div>
+    <p class="hint">When on, the mic turns back on after the agent finishes (phone-call style). When off, tap to speak again.</p>
+  </section>
+
+  <button type="button" class="btn" id="save">Save</button>
+  <div id="toast" class="toast">Saved</div>
+
+  <a href="/voice" class="back">← Back to Live Connect</a>
+
+  <script>
+    const STORAGE_KEYS = {
+      silenceSeconds: "voice_silence_seconds",
+      autoResume: "voice_auto_resume",
+    };
+
+    const silenceEl = document.getElementById("silence");
+    const autoResumeEl = document.getElementById("autoResume");
+    const saveBtn = document.getElementById("save");
+    const toast = document.getElementById("toast");
+
+    function load() {
+      const silence = localStorage.getItem(STORAGE_KEYS.silenceSeconds);
+      if (silence != null) silenceEl.value = parseFloat(silence) || 2;
+      const ar = localStorage.getItem(STORAGE_KEYS.autoResume);
+      if (ar != null) autoResumeEl.checked = ar !== "false";
+    }
+
+    function showToast() {
+      toast.classList.add("show");
+      setTimeout(() => toast.classList.remove("show"), 2000);
+    }
+
+    saveBtn.addEventListener("click", () => {
+      const silence = Math.min(10, Math.max(0.5, parseFloat(silenceEl.value) || 2));
+      silenceEl.value = silence;
+      localStorage.setItem(STORAGE_KEYS.silenceSeconds, String(silence));
+      localStorage.setItem(STORAGE_KEYS.autoResume, autoResumeEl.checked ? "true" : "false");
+      showToast();
+    });
+
+    load();
+  </script>
+</body>
+</html>

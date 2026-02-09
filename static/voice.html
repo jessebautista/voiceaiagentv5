@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- static/voice.html — Live Connect: voice assistant with welcome message, then speak and get spoken replies. -->
+<!-- static/voice.html — Live Connect: phone-call style with configurable silence detection. -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -57,6 +57,7 @@
     .btn:hover { border-color: var(--accent); background: var(--accent); transform: scale(1.02); }
     .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
     .btn.recording { border-color: var(--recording); background: var(--recording); animation: pulse 1s infinite; }
+    .btn.end { width: auto; height: auto; padding: 0.5rem 1rem; border-radius: 24px; font-size: 0.9rem; margin-top: 0.5rem; }
     @keyframes pulse { 50% { opacity: 0.85; } }
     .transcript {
       max-width: 420px;
@@ -72,24 +73,34 @@
     }
     .transcript .you { color: var(--accent); margin-bottom: 0.5rem; }
     .transcript .agent { color: var(--muted); }
-    a.back { color: var(--muted); font-size: 0.85rem; margin-top: 1.5rem; }
-    a.back:hover { color: var(--text); }
+    .links { display: flex; gap: 1rem; margin-top: 1.5rem; flex-wrap: wrap; justify-content: center; }
+    a.link { color: var(--muted); font-size: 0.85rem; }
+    a.link:hover { color: var(--text); }
   </style>
 </head>
 <body>
   <h1>Live Connect</h1>
-  <p class="sub">Talk to your virtual assistant</p>
-  <div class="status" id="status">Loading…</div>
-  <button type="button" class="btn" id="btn" disabled>Start</button>
+  <p class="sub">Talk to your virtual assistant (phone-call style)</p>
+  <div class="status" id="status">Click Start — then you’ll hear the welcome and can speak</div>
+  <button type="button" class="btn" id="btn">Start</button>
+  <button type="button" class="btn end" id="endBtn" style="display: none;">End call</button>
   <div class="transcript" id="transcript"></div>
-  <a href="/" class="back">← Back to chat</a>
+  <div class="links">
+    <a href="/settings" class="link">Settings</a>
+    <a href="/" class="link">← Back to chat</a>
+  </div>
 
   <script>
     const API = window.location.origin;
     const sessionId = "voice-" + Math.random().toString(36).slice(2, 12);
     const statusEl = document.getElementById("status");
     const btnEl = document.getElementById("btn");
+    const endBtnEl = document.getElementById("endBtn");
     const transcriptEl = document.getElementById("transcript");
+
+    const STORAGE_KEYS = { silenceSeconds: "voice_silence_seconds", autoResume: "voice_auto_resume" };
+    function getSilenceSeconds() { return Math.min(10, Math.max(0.5, parseFloat(localStorage.getItem(STORAGE_KEYS.silenceSeconds)) || 2)); }
+    function getAutoResume() { return localStorage.getItem(STORAGE_KEYS.autoResume) !== "false"; }
 
     function setStatus(msg, className = "") {
       statusEl.textContent = msg;
@@ -98,56 +109,150 @@
 
     let mediaRecorder = null;
     let audioChunks = [];
+    let welcomePlayed = false;
+    let stream = null;
+    let audioContext = null;
+    let analyser = null;
+    let silenceCheckInterval = null;
+    let silenceStartTime = null;
+    let hadSpeech = false;
+    let inCall = false;
+    const VOLUME_THRESHOLD = 0.008;
+    const CHECK_MS = 200;
+    const MIN_SPEECH_MS = 400;
+
+    function showInCall(show) {
+      inCall = show;
+      btnEl.style.display = show ? "none" : "block";
+      endBtnEl.style.display = show ? "block" : "none";
+    }
+
+    function stopSilenceDetection() {
+      if (silenceCheckInterval) {
+        clearInterval(silenceCheckInterval);
+        silenceCheckInterval = null;
+      }
+      silenceStartTime = null;
+      hadSpeech = false;
+    }
+
+    function getVolumeLevel() {
+      if (!analyser) return 0;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) sum += Math.abs((data[i] - 128) / 128);
+      return sum / data.length;
+    }
+
+    function stopRecordingAndSend() {
+      if (!mediaRecorder || mediaRecorder.state === "inactive") return;
+      stopSilenceDetection();
+      mediaRecorder.stop();
+    }
+
+    function startListening() {
+      const silenceSeconds = getSilenceSeconds();
+      audioChunks = [];
+      hadSpeech = false;
+      silenceStartTime = null;
+      navigator.mediaDevices.getUserMedia({ audio: true }).then((s) => {
+        stream = s;
+        mediaRecorder = new MediaRecorder(stream);
+        mediaRecorder.ondataavailable = (e) => { if (e.data.size) audioChunks.push(e.data); };
+        mediaRecorder.onstop = () => {
+          stream.getTracks().forEach((t) => t.stop());
+          stream = null;
+          const blob = new Blob(audioChunks, { type: "audio/webm" });
+          handleAudio(blob);
+        };
+        mediaRecorder.start();
+        setStatus("Listening… speak, then pause " + silenceSeconds + "s", "recording");
+        btnEl.classList.add("recording");
+
+        try {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          const source = audioContext.createMediaStreamSource(s);
+          analyser = audioContext.createAnalyser();
+          analyser.fftSize = 2048;
+          analyser.smoothingTimeConstant = 0.3;
+          source.connect(analyser);
+        } catch (e) {
+          setStatus("Listening… (silence detection unavailable)", "recording");
+          return;
+        }
+
+        const requiredSilenceChecks = Math.ceil((silenceSeconds * 1000) / CHECK_MS);
+        const minSpeechChecks = Math.ceil(MIN_SPEECH_MS / CHECK_MS);
+        let speechChecks = 0;
+        let silenceChecks = 0;
+
+        silenceCheckInterval = setInterval(() => {
+          const vol = getVolumeLevel();
+          if (vol > VOLUME_THRESHOLD) {
+            hadSpeech = true;
+            speechChecks = Math.min(speechChecks + 1, minSpeechChecks);
+            silenceChecks = 0;
+          } else {
+            if (hadSpeech && speechChecks >= minSpeechChecks) {
+              silenceChecks++;
+              if (silenceChecks >= requiredSilenceChecks) {
+                stopRecordingAndSend();
+                return;
+              }
+            }
+          }
+        }, CHECK_MS);
+      }).catch((e) => {
+        setStatus("Microphone error: " + e.message);
+        showInCall(false);
+      });
+    }
+
+    function endCall() {
+      stopSilenceDetection();
+      if (mediaRecorder && mediaRecorder.state !== "inactive") {
+        mediaRecorder.stop();
+        mediaRecorder = null;
+      }
+      if (stream) {
+        stream.getTracks().forEach((t) => t.stop());
+        stream = null;
+      }
+      btnEl.classList.remove("recording");
+      btnEl.textContent = "Start";
+      showInCall(false);
+      setStatus("Call ended. Click Start to begin again.");
+    }
 
     async function playWelcome() {
       setStatus("Playing welcome…", "speaking");
       try {
-        const r = await fetch(API + "/voice/welcome");
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 35000);
+        const r = await fetch(API + "/voice/welcome", { signal: ctrl.signal });
+        clearTimeout(t);
         if (!r.ok) throw new Error("Welcome audio failed");
         const blob = await r.blob();
         const url = URL.createObjectURL(blob);
         const audio = new Audio(url);
         await new Promise((resolve, reject) => {
           audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
-          audio.onerror = reject;
-          audio.play();
+          audio.onerror = (e) => reject(new Error("Playback failed"));
+          audio.play().catch(reject);
         });
-        setStatus("Tap the button and speak", "success");
+        welcomePlayed = true;
+        showInCall(true);
+        startListening();
       } catch (e) {
-        setStatus("Welcome failed: " + e.message);
+        setStatus("Welcome failed: " + (e.message || "Try again."));
       }
-    }
-
-    function startRecording() {
-      audioChunks = [];
-      navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
-        mediaRecorder = new MediaRecorder(stream);
-        mediaRecorder.ondataavailable = (e) => { if (e.data.size) audioChunks.push(e.data); };
-        mediaRecorder.onstop = () => {
-          stream.getTracks().forEach((t) => t.stop());
-          const blob = new Blob(audioChunks, { type: "audio/webm" });
-          handleAudio(blob);
-        };
-        mediaRecorder.start();
-        setStatus("Listening…", "recording");
-        btnEl.textContent = "Stop";
-        btnEl.classList.add("recording");
-      }).catch((e) => {
-        setStatus("Microphone error: " + e.message);
-      });
-    }
-
-    function stopRecording() {
-      if (mediaRecorder && mediaRecorder.state !== "inactive") {
-        mediaRecorder.stop();
-      }
-      btnEl.textContent = "Speak";
-      btnEl.classList.remove("recording");
     }
 
     async function handleAudio(blob) {
+      btnEl.classList.remove("recording");
       setStatus("Processing…");
-      btnEl.disabled = true;
+      if (!inCall) return;
       try {
         const form = new FormData();
         form.append("file", blob, "audio.webm");
@@ -155,8 +260,8 @@
         if (!sttRes.ok) throw new Error("Speech recognition failed");
         const { text } = await sttRes.json();
         if (!text || !text.trim()) {
-          setStatus("No speech detected. Try again.");
-          btnEl.disabled = false;
+          setStatus("No speech detected. Listening again…", "success");
+          startListening();
           return;
         }
         addToTranscript("you", text);
@@ -179,17 +284,25 @@
           const audioBlob = await ttsRes.blob();
           const url = URL.createObjectURL(audioBlob);
           const audio = new Audio(url);
-          await new Promise((resolve, reject) => {
+          await new Promise((resolve) => {
             audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
-            audio.onerror = resolve;
-            audio.play();
+            audio.onerror = () => resolve();
+            audio.play().catch(() => resolve());
           });
         }
-        setStatus("Tap the button and speak again", "success");
+        if (inCall && getAutoResume()) {
+          setStatus("Listening…", "success");
+          startListening();
+        } else {
+          showInCall(false);
+          btnEl.textContent = "Speak";
+          setStatus("Tap Speak for your next turn, or End call.", "success");
+        }
       } catch (e) {
         setStatus("Error: " + e.message);
+        if (inCall && getAutoResume()) startListening();
+        else { showInCall(false); btnEl.textContent = "Speak"; }
       }
-      btnEl.disabled = false;
     }
 
     function addToTranscript(role, text) {
@@ -201,16 +314,21 @@
     }
 
     btnEl.addEventListener("click", () => {
-      if (mediaRecorder && mediaRecorder.state === "recording") {
-        stopRecording();
-      } else {
-        startRecording();
+      if (!welcomePlayed) {
+        btnEl.disabled = true;
+        playWelcome().then(() => { btnEl.disabled = false; });
+        return;
+      }
+      if (!inCall && welcomePlayed) {
+        showInCall(true);
+        startListening();
       }
     });
 
+    endBtnEl.addEventListener("click", endCall);
+
     window.addEventListener("load", () => {
-      btnEl.textContent = "Speak";
-      playWelcome().then(() => { btnEl.disabled = false; });
+      btnEl.textContent = "Start";
     });
   </script>
 </body>

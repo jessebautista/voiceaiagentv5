@@ -76,6 +76,15 @@ async def voice_page():
     raise HTTPException(status_code=404, detail="Voice page not found")
 
 
+@app.get("/settings")
+async def settings_page():
+    """Serve the settings page (voice options, etc.)."""
+    settings_path = STATIC_DIR / "settings.html"
+    if settings_path.exists():
+        return FileResponse(settings_path)
+    raise HTTPException(status_code=404, detail="Settings page not found")
+
+
 @app.get("/health")
 async def health():
     """Health check for load balancers and monitoring."""
@@ -109,6 +118,20 @@ class TTSRequest(BaseModel):
     text: str
 
 
+# Timeout for SDK voice calls so we never hang (seconds)
+VOICE_SDK_TIMEOUT = 30.0
+
+
+@app.get("/voice/check")
+async def voice_check():
+    """
+    Check if voice (ElevenLabs) is configured. Returns ready=True if ELEVENLABS_API_KEY is set.
+    Use this to confirm .env is loaded before testing /voice/welcome.
+    """
+    key = os.getenv("ELEVENLABS_API_KEY")
+    return {"ready": bool(key and key.strip()), "message": "Set ELEVENLABS_API_KEY in .env" if not key else "OK"}
+
+
 @app.get("/voice/welcome")
 async def voice_welcome():
     """
@@ -117,9 +140,17 @@ async def voice_welcome():
     """
     phrase = voice.get_welcome_phrase()
     loop = asyncio.get_event_loop()
-    audio_bytes = await loop.run_in_executor(None, lambda: voice.text_to_speech(phrase))
+    try:
+        audio_bytes = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: voice.text_to_speech(phrase)),
+            timeout=VOICE_SDK_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Voice welcome TTS timed out after %ss", VOICE_SDK_TIMEOUT)
+        raise HTTPException(status_code=504, detail="TTS timed out. Try again.")
     if not audio_bytes:
         raise HTTPException(status_code=503, detail="ElevenLabs TTS not configured or failed. Set ELEVENLABS_API_KEY.")
+    logger.info("Voice welcome: returning %s bytes", len(audio_bytes))
     return Response(content=audio_bytes, media_type="audio/mpeg")
 
 
@@ -129,7 +160,14 @@ async def voice_tts(body: TTSRequest):
     if not body.text or not body.text.strip():
         raise HTTPException(status_code=400, detail="text is required")
     loop = asyncio.get_event_loop()
-    audio_bytes = await loop.run_in_executor(None, lambda: voice.text_to_speech(body.text))
+    try:
+        audio_bytes = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: voice.text_to_speech(body.text)),
+            timeout=VOICE_SDK_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Voice TTS timed out after %ss", VOICE_SDK_TIMEOUT)
+        raise HTTPException(status_code=504, detail="TTS timed out.")
     if not audio_bytes:
         raise HTTPException(status_code=503, detail="ElevenLabs TTS not configured or failed.")
     return Response(content=audio_bytes, media_type="audio/mpeg")
@@ -143,9 +181,16 @@ async def voice_stt(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="No audio data")
     content_type = file.content_type or "audio/webm"
     loop = asyncio.get_event_loop()
-    text = await loop.run_in_executor(
-        None, lambda: voice.speech_to_text(audio_bytes, content_type=content_type)
-    )
+    try:
+        text = await asyncio.wait_for(
+            loop.run_in_executor(
+                None, lambda: voice.speech_to_text(audio_bytes, content_type=content_type)
+            ),
+            timeout=VOICE_SDK_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Voice STT timed out after %ss", VOICE_SDK_TIMEOUT)
+        raise HTTPException(status_code=504, detail="STT timed out.")
     if text is None:
         raise HTTPException(status_code=503, detail="ElevenLabs STT failed or not configured.")
     return {"text": text}
