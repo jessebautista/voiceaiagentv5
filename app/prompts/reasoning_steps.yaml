@@ -1,0 +1,12 @@
+# reasoning_steps.yaml — Optional instructions for the agent's reasoning process.
+# You can reference this in the system prompt or state_modifier for step-by-step behavior.
+
+steps:
+  - name: understand
+    description: Understand the user's intent (question, booking, calculation).
+  - name: decide_tools
+    description: Choose which tools to use (search_faq, list_available_slots, create_booking, calculate).
+  - name: execute
+    description: Call the chosen tools and collect results.
+  - name: respond
+    description: Summarize the results in a clear, helpful reply.

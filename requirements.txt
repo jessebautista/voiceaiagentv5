@@ -1,0 +1,27 @@
+# AI Agent Service — Python dependencies
+# Install: pip install -r requirements.txt
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.0.0
+
+# LangChain & LangGraph
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+langgraph>=0.2.0
+
+# Optional: Redis for persistent memory
+# redis>=5.0.0          # for REDIS_URL (standard Redis)
+upstash-redis>=1.0.0    # for UPSTASH_REDIS_REST_* (Upstash)
+
+# For seed script (loads .env when running scripts/seed_upstash.py)
+python-dotenv>=1.0.0
+
+# Optional: Vector store + embeddings for RAG (uncomment for full FAQ from PDF)
+# langchain-community>=0.3.0
+# pypdf>=4.0.0
+
+# Tests
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
