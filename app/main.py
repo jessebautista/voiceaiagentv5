@@ -28,7 +28,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from app.agent import get_agent_response
+from app.agent import get_agent_response, get_agent_response_with_trace
 from app import voice_elevenlabs as voice
 
 
@@ -36,6 +36,7 @@ class ChatRequest(BaseModel):
     """Request body for /chat."""
     session_id: str
     message: str
+    include_observability: bool = False  # when True, response includes trace (input, llm, tool calls, etc.)
 
 app = FastAPI(
     title="AI Agent Service",
@@ -97,18 +98,23 @@ async def chat(body: ChatRequest):
     Send a message to the agent and get a response.
     session_id: Identifies the conversation thread (memory is keyed by this).
     message: The user's message.
+    include_observability: if True, response includes trace (input, llm steps, tool calls, tool results).
     """
     if not body.message or not body.message.strip():
-        return {"reply": "Please send a non-empty message.", "error": None}
+        return {"reply": "Please send a non-empty message.", "error": None, "trace": None}
     msg = body.message.strip()
     logger.info("Chat request | session_id=%s | message=%s", body.session_id, msg[:80] + ("..." if len(msg) > 80 else ""))
     try:
+        if body.include_observability:
+            reply, trace = await get_agent_response_with_trace(session_id=body.session_id, user_message=msg)
+            logger.info("Chat response | session_id=%s | reply_len=%s | trace_steps=%s", body.session_id, len(reply), len(trace))
+            return {"reply": reply, "error": None, "trace": trace}
         reply = await get_agent_response(session_id=body.session_id, user_message=msg)
         logger.info("Chat response | session_id=%s | reply_len=%s", body.session_id, len(reply))
-        return {"reply": reply, "error": None}
+        return {"reply": reply, "error": None, "trace": None}
     except Exception as e:
         logger.exception("Chat error | session_id=%s", body.session_id)
-        return {"reply": "", "error": str(e)}
+        return {"reply": "", "error": str(e), "trace": None}
 
 
 # ----- Voice (Live Connect) -----

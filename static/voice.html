@@ -73,6 +73,41 @@
     }
     .transcript .you { color: var(--accent); margin-bottom: 0.5rem; }
     .transcript .agent { color: var(--muted); }
+    .observability {
+      max-width: 520px;
+      width: 100%;
+      margin-top: 1rem;
+      padding: 0.75rem 1rem;
+      background: #0a0a0c;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-family: "SF Mono", "Monaco", "Inconsolata", "Fira Mono", monospace;
+      font-size: 0.75rem;
+      max-height: 280px;
+      overflow-y: auto;
+    }
+    .observability h3 {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin: 0 0 0.5rem;
+      font-weight: 600;
+    }
+    .obs-entry {
+      margin: 0.4rem 0;
+      padding: 0.35rem 0.5rem;
+      border-radius: 6px;
+      border-left: 3px solid var(--border);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .obs-entry.input { border-left-color: var(--accent); background: rgba(99, 102, 241, 0.08); }
+    .obs-entry.llm { border-left-color: #a78bfa; background: rgba(167, 139, 250, 0.06); }
+    .obs-entry.tool_call { border-left-color: #f59e0b; background: rgba(245, 158, 11, 0.06); }
+    .obs-entry.tool_result { border-left-color: var(--success); background: rgba(34, 197, 94, 0.06); }
+    .obs-label { font-weight: 600; margin-right: 0.5rem; opacity: 0.9; }
+    .obs-entry.empty { color: var(--muted); font-style: italic; }
     .links { display: flex; gap: 1rem; margin-top: 1.5rem; flex-wrap: wrap; justify-content: center; }
     a.link { color: var(--muted); font-size: 0.85rem; }
     a.link:hover { color: var(--text); }
@@ -85,6 +120,10 @@
   <button type="button" class="btn" id="btn">Start</button>
   <button type="button" class="btn end" id="endBtn" style="display: none;">End call</button>
   <div class="transcript" id="transcript"></div>
+  <div class="observability" id="observability">
+    <h3>Agent trace</h3>
+    <div id="observabilityLog">No trace yet. Speak and the LLM input, tool use, and response will appear here.</div>
+  </div>
   <div class="links">
     <a href="/settings" class="link">Settings</a>
     <a href="/" class="link">← Back to chat</a>
@@ -269,11 +308,12 @@
         const chatRes = await fetch(API + "/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: sessionId, message: text }),
+          body: JSON.stringify({ session_id: sessionId, message: text, include_observability: true }),
         });
         const chatData = await chatRes.json();
         const reply = chatData.error ? "Sorry, something went wrong." : (chatData.reply || "");
         if (reply) addToTranscript("agent", reply);
+        if (chatData.trace && chatData.trace.length) appendObservabilityTrace(chatData.trace);
         setStatus("Speaking…", "speaking");
         const ttsRes = await fetch(API + "/voice/tts", {
           method: "POST",
@@ -311,6 +351,51 @@
       div.textContent = (role === "you" ? "You: " : "Agent: ") + text;
       transcriptEl.appendChild(div);
       transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    }
+
+    const observabilityLogEl = document.getElementById("observabilityLog");
+    function appendObservabilityTrace(trace) {
+      if (!trace || !trace.length) return;
+      const fragment = document.createDocumentFragment();
+      for (const step of trace) {
+        const entry = document.createElement("div");
+        entry.className = "obs-entry " + (step.type || "");
+        let label = "";
+        let content = "";
+        if (step.type === "input") {
+          label = "INPUT";
+          content = step.content || "";
+        } else if (step.type === "llm") {
+          label = "LLM";
+          content = step.content || "";
+        } else if (step.type === "tool_call") {
+          label = "TOOL";
+          content = step.name + (step.input && Object.keys(step.input).length ? "\n" + JSON.stringify(step.input, null, 2) : "");
+        } else if (step.type === "tool_result") {
+          label = "RESULT";
+          content = step.name + (step.output ? ": " + (step.output.length > 500 ? step.output.slice(0, 500) + "…" : step.output) : "");
+        } else {
+          content = JSON.stringify(step);
+        }
+        entry.innerHTML = "<span class=\"obs-label\">" + label + "</span>" + (content ? escapeHtml(content) : "<span class=\"empty\">—</span>");
+        fragment.appendChild(entry);
+      }
+      if (observabilityLogEl.dataset.hasTrace === "true") {
+        const sep = document.createElement("div");
+        sep.className = "obs-entry empty";
+        sep.textContent = "—";
+        observabilityLogEl.appendChild(sep);
+      } else {
+        observabilityLogEl.textContent = "";
+      }
+      observabilityLogEl.appendChild(fragment);
+      observabilityLogEl.dataset.hasTrace = "true";
+      observabilityLogEl.parentElement.scrollTop = observabilityLogEl.parentElement.scrollHeight;
+    }
+    function escapeHtml(s) {
+      const div = document.createElement("div");
+      div.textContent = s;
+      return div.innerHTML;
     }
 
     btnEl.addEventListener("click", () => {

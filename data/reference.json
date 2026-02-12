@@ -1,0 +1,17 @@
+{
+  "company": {
+    "name": "Acme Support",
+    "support_email": "support@company.com",
+    "phone": "+1 (555) 123-4567"
+  },
+  "policies": {
+    "refund_days": 30,
+    "booking_advance_days": 60,
+    "max_guests_per_booking": 10
+  },
+  "document_types_accepted": [
+    "PDF",
+    "DOCX",
+    "Images (JPG, PNG)"
+  ]
+}
