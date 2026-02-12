@@ -1,116 +1,451 @@
 <!DOCTYPE html>
-<!-- static/index.html — Simple chat UI for the AI agent. POSTs to /chat and displays replies. -->
+<!-- static/index.html — Dashboard-style chat UI for the AI agent. -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AI Agent — Chat</title>
+  <title>Receptionist Console — Chat</title>
   <style>
     :root {
-      --bg: #0f0f12;
-      --surface: #1a1a1f;
-      --border: #2a2a32;
-      --text: #e8e8ed;
-      --muted: #8888a0;
-      --accent: #6c5ce7;
-      --accent-hover: #7d6ef7;
-      --user-bg: #2a2a32;
-      --bot-bg: #25252d;
-      --error: #e74c3c;
+      --bg: #f5f7fb;
+      --bg-elevated: #ffffff;
+      --border-subtle: #e2e8f0;
+      --border-strong: #cbd5e1;
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      --accent: #16a34a;
+      --accent-soft: rgba(22, 163, 74, 0.08);
+      --accent-soft-strong: rgba(22, 163, 74, 0.12);
+      --accent-hover: #15803d;
+      --pill-bg: #ecfdf3;
+      --error: #b91c1c;
+      --shadow-soft: 0 18px 45px rgba(15, 23, 42, 0.08);
+      --radius-xl: 18px;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: "DM Sans", system-ui, sans-serif;
-      background: var(--bg);
-      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top left, #e0fbea 0, #f9fafb 42%, #eef2ff 100%);
+      color: var(--text-main);
       min-height: 100vh;
       display: flex;
+    }
+    .app-shell {
+      display: flex;
+      width: 100%;
+      max-width: 1280px;
+      margin: 1.5rem auto;
+      padding: 0 1.25rem;
+      gap: 1.5rem;
+    }
+    .sidebar {
+      width: 240px;
+      background: rgba(255, 255, 255, 0.9);
+      backdrop-filter: blur(12px);
+      border-radius: var(--radius-xl);
+      border: 1px solid var(--border-subtle);
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.06);
+      padding: 1.1rem 1.1rem 1.25rem;
+      display: flex;
       flex-direction: column;
+      gap: 1.25rem;
     }
-    header {
-      padding: 1rem 1.5rem;
-      border-bottom: 1px solid var(--border);
-      background: var(--surface);
+    .sidebar-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
     }
-    header h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
-    header p { margin: 0.25rem 0 0; font-size: 0.875rem; color: var(--muted); }
-    #messages {
+    .brand-badge {
+      width: 32px;
+      height: 32px;
+      border-radius: 999px;
+      background: conic-gradient(from 160deg, #16a34a, #22c55e, #bbf7d0, #16a34a);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #022c22;
+      font-weight: 800;
+      font-size: 0.9rem;
+      box-shadow: 0 10px 25px rgba(22, 163, 74, 0.45);
+    }
+    .brand-text {
+      display: flex;
+      flex-direction: column;
+      gap: 0.05rem;
+    }
+    .brand-text span:first-child {
+      font-size: 0.9rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text-main);
+    }
+    .brand-text span:last-child {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }
+    .nav-group-label {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--text-muted);
+      margin-bottom: 0.25rem;
+    }
+    .nav-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.55rem 0.7rem;
+      border-radius: 999px;
+      text-decoration: none;
+      color: var(--text-main);
+      font-size: 0.86rem;
+      border: 1px solid transparent;
+      transition: background 0.15s ease, border-color 0.15s ease, transform 0.08s ease;
+    }
+    .nav-item span.icon {
+      width: 18px;
+      text-align: center;
+      font-size: 0.9rem;
+      opacity: 0.8;
+    }
+    .nav-item span.label {
       flex: 1;
-      overflow-y: auto;
-      padding: 1rem 1.5rem;
+    }
+    .nav-item.primary {
+      background: var(--accent-soft);
+      border-color: rgba(22, 163, 74, 0.35);
+    }
+    .nav-item.primary span.label {
+      font-weight: 600;
+    }
+    .nav-item:hover {
+      background: var(--accent-soft-strong);
+      border-color: rgba(22, 163, 74, 0.6);
+      transform: translateY(-1px);
+    }
+    .nav-footer {
+      margin-top: auto;
+      padding-top: 0.75rem;
+      border-top: 1px dashed var(--border-subtle);
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }
+    .nav-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      padding: 0.15rem 0.55rem;
+      border-radius: 999px;
+      background: var(--pill-bg);
+      color: #14532d;
+      font-weight: 600;
+      font-size: 0.7rem;
+      margin-bottom: 0.3rem;
+    }
+
+    .main {
+      flex: 1;
       display: flex;
       flex-direction: column;
       gap: 1rem;
-      max-width: 48rem;
-      margin: 0 auto;
-      width: 100%;
+      min-width: 0;
+    }
+    .main-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .main-header-left h1 {
+      margin: 0;
+      font-size: 1.35rem;
+    }
+    .main-header-left p {
+      margin: 0.2rem 0 0;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.25rem 0.6rem;
+      border-radius: 999px;
+      background: rgba(22, 163, 74, 0.08);
+      color: #166534;
+      font-size: 0.75rem;
+      font-weight: 600;
+      border: 1px solid rgba(22, 163, 74, 0.25);
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: #22c55e;
+      box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.2);
+    }
+
+    .card {
+      background: var(--bg-elevated);
+      border-radius: var(--radius-xl);
+      border: 1px solid var(--border-subtle);
+      box-shadow: var(--shadow-soft);
+      padding: 1.1rem 1.25rem 1.1rem;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.8rem;
+    }
+    .card-header-title {
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+    .card-header-sub {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.35rem 0.1rem 0.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+      min-height: 220px;
+      max-height: min(60vh, 520px);
     }
     .msg {
-      padding: 0.75rem 1rem;
-      border-radius: 12px;
-      max-width: 85%;
+      padding: 0.65rem 0.9rem;
+      border-radius: 999px;
+      max-width: 82%;
       line-height: 1.5;
+      display: inline-flex;
+      flex-direction: column;
     }
     .msg.user {
       align-self: flex-end;
-      background: var(--user-bg);
-      border: 1px solid var(--border);
+      background: #ecfdf3;
+      color: #022c22;
+      border: 1px solid rgba(22, 163, 74, 0.4);
     }
     .msg.bot {
       align-self: flex-start;
-      background: var(--bot-bg);
-      border: 1px solid var(--border);
+      background: #f8fafc;
+      color: var(--text-main);
+      border: 1px solid var(--border-subtle);
     }
-    .msg.error { background: rgba(231,76,60,0.15); border-color: var(--error); color: #f5b7b1; }
-    .msg .role { font-size: 0.7rem; text-transform: uppercase; color: var(--muted); margin-bottom: 0.25rem; }
+    .msg.error {
+      background: #fef2f2;
+      border-color: rgba(185, 28, 28, 0.35);
+      color: var(--error);
+    }
+    .msg .role {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 0.25rem;
+      letter-spacing: 0.08em;
+    }
+    .msg .content {
+      font-size: 0.86rem;
+    }
+
+    .composer {
+      border-top: 1px dashed var(--border-subtle);
+      padding-top: 0.7rem;
+      margin-top: 0.4rem;
+    }
     #form {
-      padding: 1rem 1.5rem;
-      border-top: 1px solid var(--border);
-      background: var(--surface);
+      width: 100%;
     }
     #form form {
-      max-width: 48rem;
-      margin: 0 auto;
       display: flex;
-      gap: 0.5rem;
+      gap: 0.55rem;
+      align-items: center;
     }
     #input {
       flex: 1;
-      padding: 0.75rem 1rem;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      background: var(--bg);
-      color: var(--text);
-      font-size: 1rem;
+      padding: 0.7rem 0.9rem;
+      border: 1px solid var(--border-subtle);
+      border-radius: 999px;
+      background: #f8fafc;
+      color: var(--text-main);
+      font-size: 0.9rem;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6);
     }
-    #input:focus { outline: none; border-color: var(--accent); }
+    #input::placeholder {
+      color: #a0aec0;
+    }
+    #input:focus {
+      outline: none;
+      border-color: rgba(22, 163, 74, 0.6);
+      box-shadow: 0 0 0 1px rgba(22, 163, 74, 0.2);
+      background: #ffffff;
+    }
     button[type="submit"] {
-      padding: 0.75rem 1.25rem;
+      padding: 0.7rem 1.15rem;
       background: var(--accent);
-      color: #fff;
+      color: #ffffff;
       border: none;
-      border-radius: 10px;
+      border-radius: 999px;
       font-weight: 600;
       cursor: pointer;
+      font-size: 0.86rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      box-shadow: 0 10px 22px rgba(22, 163, 74, 0.35);
+      transition: background 0.12s ease, transform 0.06s ease, box-shadow 0.12s ease;
     }
-    button[type="submit"]:hover { background: var(--accent-hover); }
-    button[type="submit"]:disabled { opacity: 0.6; cursor: not-allowed; }
-    .typing { color: var(--muted); font-style: italic; }
+    button[type="submit"]:hover {
+      background: var(--accent-hover);
+      transform: translateY(-1px);
+      box-shadow: 0 14px 28px rgba(22, 163, 74, 0.4);
+    }
+    button[type="submit"]:disabled {
+      opacity: 0.65;
+      cursor: not-allowed;
+      box-shadow: none;
+      transform: none;
+    }
+    .typing {
+      color: var(--text-muted);
+      font-style: italic;
+      font-size: 0.8rem;
+      margin-top: 0.2rem;
+    }
+    .submit-icon {
+      font-size: 0.9rem;
+    }
+
+    @media (max-width: 960px) {
+      .app-shell {
+        flex-direction: column;
+        margin: 0.75rem auto 1.5rem;
+      }
+      .sidebar {
+        width: 100%;
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .nav-group-label, .nav-footer {
+        display: none;
+      }
+      .nav-list {
+        flex-direction: row;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+      .nav-item {
+        border-radius: 999px;
+      }
+    }
+    @media (max-width: 640px) {
+      body {
+        background: #f9fafb;
+      }
+      .app-shell {
+        padding: 0.5rem;
+      }
+      .sidebar {
+        padding: 0.7rem 0.9rem;
+      }
+      .card {
+        padding: 0.9rem 0.9rem 1rem;
+      }
+    }
   </style>
 </head>
 <body>
-  <header>
-    <h1>AI Agent — Receptionist</h1>
-    <p>Ask about hours, contact, bookings, or use the calculator. <a href="/voice" style="color: var(--accent);">Live Connect (voice) →</a></p>
-  </header>
-  <main id="messages"></main>
-  <section id="form">
-    <form id="chat-form">
-      <input id="input" type="text" placeholder="Type a message..." autocomplete="off" />
-      <button type="submit">Send</button>
-    </form>
-  </section>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-badge">R</div>
+        <div class="brand-text">
+          <span>Receptionist</span>
+          <span>AI call + chat agent</span>
+        </div>
+      </div>
+      <div>
+        <div class="nav-group-label">Workspace</div>
+        <nav class="nav-list">
+          <a href="/" class="nav-item primary">
+            <span class="icon">💬</span>
+            <span class="label">Chat</span>
+          </a>
+          <a href="/voice" class="nav-item">
+            <span class="icon">📞</span>
+            <span class="label">Live Connect</span>
+          </a>
+          <a href="/workspace" class="nav-item">
+            <span class="icon">⚙️</span>
+            <span class="label">Agent workspace</span>
+          </a>
+          <a href="/settings" class="nav-item">
+            <span class="icon">🎛</span>
+            <span class="label">Voice settings</span>
+          </a>
+        </nav>
+      </div>
+      <div class="nav-footer">
+        <div class="nav-pill">
+          <span>●</span>
+          <span>Live</span>
+        </div>
+        <div>Model + tools are ready. Conversations are stored per tab session.</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="main-header">
+        <div class="main-header-left">
+          <h1>Receptionist console</h1>
+          <p>Ask about hours, contact, bookings, or pricing. The same agent powers Live Connect.</p>
+        </div>
+        <div class="status-chip">
+          <span class="status-dot"></span>
+          <span>OpenAI connected</span>
+        </div>
+      </div>
+
+      <section class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-header-title">Chat with your assistant</div>
+            <div class="card-header-sub">Use this to iterate on the receptionist behavior before testing in voice.</div>
+          </div>
+        </div>
+
+        <div id="messages"></div>
+
+        <div class="composer">
+          <div id="form">
+            <form id="chat-form">
+              <input id="input" type="text" placeholder="Ask about office hours, parking, or schedule a booking…" autocomplete="off" />
+              <button type="submit">
+                <span class="submit-icon">↗</span>
+                <span>Send</span>
+              </button>
+            </form>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
   <script>
     const API_BASE = window.location.origin;
     const sessionId = "session-" + Math.random().toString(36).slice(2, 12);

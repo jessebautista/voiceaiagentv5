@@ -22,16 +22,23 @@ Set these up before running the project so your team can run it from scratch.
 ```
 <project-root>/
 ├── app/
-│   ├── main.py              # Entry point: FastAPI server and routes
-│   ├── agent.py             # Orchestrator: LLM + tools (LangGraph ReAct agent)
+│   ├── main.py              # FastAPI server, routes (/chat, /voice, /workspace, etc.)
+│   ├── agent.py             # Orchestrator: LLM + tools (LangGraph ReAct agent, workspace‑driven config)
 │   ├── agents/              # Personas (receptionist, SME expert)
-│   ├── tools/               # Skills: search_faq, booking, calculator
+│   ├── tools/               # Skills: search_faq, booking, calculator, datetime, reference JSON
+│   ├── workspace_config.py  # Read/write workspace config (prompt override, enabled tools, welcome)
 │   ├── memory/              # Optional Redis chat history
 │   └── prompts/             # System prompt and reasoning steps
-├── data/                    # Knowledge base (e.g. company_faq.pdf)
+├── data/
+│   ├── reference.json       # Reference data for get_reference_info tool
+│   └── workspace_config.json# Current workspace settings (overrides; edited via /workspace UI)
 ├── scripts/
 │   └── seed_upstash.py      # Seed Upstash with sample FAQ and chat data
-├── static/                  # Web UI (index.html)
+├── static/
+│   ├── index.html           # Chat UI
+│   ├── voice.html           # Live Connect voice UI + trace panel
+│   ├── settings.html        # Local voice/silence settings
+│   └── workspace.html       # Workspace to edit prompt, tools, welcome message
 ├── tests/
 ├── .env                     # Secrets (copy from .env.example)
 ├── requirements.txt
@@ -76,10 +83,15 @@ Ensure you have the [prerequisites](#prerequisites-platforms--accounts) (Python 
 - **search_faq** — Search company FAQ. Uses Upstash `faq:entries` when set (after running `scripts/seed_upstash.py`), otherwise in-memory entries. Matches on words so questions like “office and parking” find both.
 - **list_available_slots** / **create_booking** — List slots and create a booking (mock; replace with calendar/CRM).
 - **calculate** — Safe math for pricing or expressions.
+- **get_current_datetime** — Returns the current date/time (optionally for a specific timezone) so the agent can answer “what’s the date/time?” or reason about “today”.
+- **get_reference_info** — Reads `data/reference.json` and looks up structured info (e.g. policies, contact details, accepted document types) by key path like `policies.refund_days`.
+
+Which tools are enabled is controlled from the **Workspace** page (`/workspace`), via `data/workspace_config.json`.
 
 ## Observability
 
 - **Console logging**: Each request logs `session_id` and message preview; each response logs reply length. Tool calls (name + input/output) are logged via `app.callbacks.LoggingCallbackHandler`.
+- **Voice/trace UI**: The `/voice` page calls `/chat` with `include_observability=true` and renders a live **Agent trace** panel (input → LLM steps → tool calls → tool results) so you can see how the agent reasoned.
 - **Log level**: Set `LOG_LEVEL=DEBUG` in `.env` for noisier logs (e.g. agent actions).
 - **LangSmith**: Set `LANGCHAIN_API_KEY` in `.env` (get one at [smith.langchain.com](https://smith.langchain.com)) to enable tracing. Traces appear in your LangSmith project for each chat (LLM calls, tool use, latency).
 
@@ -107,14 +119,24 @@ You can inspect and reuse these keys in the Upstash dashboard or in your app.
 
 ## Voice (Live Connect)
 
-On the **feature/voice-elevenlabs** branch, a voice assistant is available at **/voice**. Flow:
+On the **main** branch, a voice assistant is available at **/voice**. Flow:
 
 1. Open [http://localhost:8000/voice](http://localhost:8000/voice).
-2. The app plays a welcome message (e.g. “Good morning, how can I help you?”) using ElevenLabs TTS.
-3. Tap **Speak**, say your question, then tap **Stop**. Your speech is sent to ElevenLabs STT → agent → ElevenLabs TTS, and the reply is played back.
-4. Repeat as needed; the same chat session is used so the agent keeps context.
+2. The app plays a welcome message using ElevenLabs TTS. The phrase comes from the workspace **welcome message** override (if set in `/workspace`), otherwise a time-based default (e.g. “Good morning, how can I help you?”).
+3. Click **Start**, speak, and pause; your speech is sent to ElevenLabs STT → the same agent used for `/chat` → ElevenLabs TTS, and the reply is played back. Each turn is also logged in the **Agent trace** panel.
+4. Repeat as needed; the same `session_id` is used so the agent keeps context.
 
 **Required:** `ELEVENLABS_API_KEY` in `.env` (get it from [ElevenLabs](https://elevenlabs.io/app/settings/api-keys)). Optional: `ELEVENLABS_VOICE_ID` to choose a different voice.
+
+## Workspace (agent behavior editor)
+
+The **Workspace** page at **/workspace** lets you:
+
+- Edit the **receptionist system prompt** (or fall back to `app/prompts/system_receptionist.txt`).
+- Enable/disable individual **tools** (FAQ search, booking, calculator, datetime, reference).
+- Override the **voice welcome message**.
+
+Changes are persisted in `data/workspace_config.json` and picked up automatically by the agent and voice welcome on the next request.
 
 ## Optional
 

@@ -1,79 +1,258 @@
 <!DOCTYPE html>
-<!-- static/workspace.html — Edit voice agent: system prompt, enabled tools, welcome message. -->
+<!-- static/workspace.html — Dashboard workspace: edit prompt, tools, welcome message. -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Workspace — Voice Agent</title>
+  <title>Receptionist Console — Workspace</title>
   <style>
     :root {
-      --bg: #0d0d10;
-      --surface: #16161c;
-      --border: #2a2a32;
-      --text: #e8e8ed;
-      --muted: #8888a0;
-      --accent: #6366f1;
+      --bg: #f5f7fb;
+      --bg-elevated: #ffffff;
+      --border-subtle: #e2e8f0;
+      --border-strong: #cbd5e1;
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      --accent: #16a34a;
+      --accent-soft: rgba(22, 163, 74, 0.08);
+      --accent-hover: #15803d;
+      --pill-bg: #ecfdf3;
       --success: #22c55e;
       --warn: #f59e0b;
+      --shadow-soft: 0 18px 45px rgba(15, 23, 42, 0.08);
+      --radius-xl: 18px;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: "DM Sans", system-ui, sans-serif;
-      background: var(--bg);
-      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top left, #e0fbea 0, #f9fafb 42%, #eef2ff 100%);
+      color: var(--text-main);
       min-height: 100vh;
-      padding: 1.5rem 1.5rem 2rem;
-      max-width: 560px;
-      margin: 0 auto;
+      display: flex;
     }
-    h1 { font-size: 1.35rem; margin: 0 0 0.25rem; }
-    p.sub { color: var(--muted); font-size: 0.875rem; margin: 0 0 1.5rem; }
-    section { margin-bottom: 1.75rem; }
-    section h2 { font-size: 0.95rem; color: var(--muted); margin: 0 0 0.75rem; font-weight: 600; }
-    label { display: block; margin-bottom: 0.5rem; font-size: 0.9rem; }
+    .app-shell {
+      display: flex;
+      width: 100%;
+      max-width: 1200px;
+      margin: 1.5rem auto;
+      padding: 0 1.25rem;
+      gap: 1.5rem;
+    }
+    .sidebar {
+      width: 240px;
+      background: rgba(255, 255, 255, 0.9);
+      backdrop-filter: blur(12px);
+      border-radius: var(--radius-xl);
+      border: 1px solid var(--border-subtle);
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.06);
+      padding: 1.1rem 1.1rem 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+    .sidebar-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+    }
+    .brand-badge {
+      width: 32px;
+      height: 32px;
+      border-radius: 999px;
+      background: conic-gradient(from 160deg, #16a34a, #22c55e, #bbf7d0, #16a34a);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #022c22;
+      font-weight: 800;
+      font-size: 0.9rem;
+      box-shadow: 0 10px 25px rgba(22, 163, 74, 0.45);
+    }
+    .brand-text {
+      display: flex;
+      flex-direction: column;
+      gap: 0.05rem;
+    }
+    .brand-text span:first-child {
+      font-size: 0.9rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text-main);
+    }
+    .brand-text span:last-child {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }
+    .nav-group-label {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--text-muted);
+      margin-bottom: 0.25rem;
+    }
+    .nav-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.55rem 0.7rem;
+      border-radius: 999px;
+      text-decoration: none;
+      color: var(--text-main);
+      font-size: 0.86rem;
+      border: 1px solid transparent;
+      transition: background 0.15s ease, border-color 0.15s ease, transform 0.08s ease;
+    }
+    .nav-item span.icon {
+      width: 18px;
+      text-align: center;
+      font-size: 0.9rem;
+      opacity: 0.8;
+    }
+    .nav-item span.label {
+      flex: 1;
+    }
+    .nav-item.primary {
+      background: var(--accent-soft);
+      border-color: rgba(22, 163, 74, 0.35);
+    }
+    .nav-item.primary span.label {
+      font-weight: 600;
+    }
+    .nav-item:hover {
+      background: rgba(22, 163, 74, 0.12);
+      border-color: rgba(22, 163, 74, 0.6);
+      transform: translateY(-1px);
+    }
+    .nav-footer {
+      margin-top: auto;
+      padding-top: 0.75rem;
+      border-top: 1px dashed var(--border-subtle);
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }
+    .nav-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      padding: 0.15rem 0.55rem;
+      border-radius: 999px;
+      background: var(--pill-bg);
+      color: #14532d;
+      font-weight: 600;
+      font-size: 0.7rem;
+      margin-bottom: 0.3rem;
+    }
+
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      min-width: 0;
+    }
+    .main-header h1 {
+      margin: 0;
+      font-size: 1.35rem;
+    }
+    .main-header p {
+      margin: 0.2rem 0 0;
+      font-size: 0.86rem;
+      color: var(--text-muted);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+      gap: 1rem;
+      align-items: flex-start;
+    }
+    .card {
+      background: var(--bg-elevated);
+      border-radius: var(--radius-xl);
+      border: 1px solid var(--border-subtle);
+      box-shadow: var(--shadow-soft);
+      padding: 1.1rem 1.25rem 1.1rem;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    section {
+      margin-bottom: 1.25rem;
+    }
+    section h2 {
+      font-size: 0.95rem;
+      color: var(--text-main);
+      margin: 0 0 0.75rem;
+      font-weight: 600;
+    }
+    label {
+      display: block;
+      margin-bottom: 0.5rem;
+      font-size: 0.9rem;
+    }
     textarea {
       width: 100%;
-      min-height: 140px;
+      min-height: 160px;
       padding: 0.75rem;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      color: var(--text);
-      font-size: 0.9rem;
+      background: #f8fafc;
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      color: var(--text-main);
+      font-size: 0.88rem;
       font-family: inherit;
       resize: vertical;
     }
-    textarea:disabled { opacity: 0.8; cursor: not-allowed; }
+    textarea:disabled {
+      opacity: 0.8;
+      cursor: not-allowed;
+    }
     input[type="text"] {
       width: 100%;
       padding: 0.6rem 0.75rem;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      color: var(--text);
-      font-size: 1rem;
+      background: #f8fafc;
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      color: var(--text-main);
+      font-size: 0.9rem;
     }
     input[type="checkbox"] { margin-right: 0.5rem; accent-color: var(--accent); }
     .row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
-    .hint { font-size: 0.8rem; color: var(--muted); margin-top: 0.35rem; }
-    .tools-grid { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; }
+    .hint { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.35rem; }
+    .tools-grid { display: flex; flex-wrap: wrap; gap: 0.5rem 1.1rem; }
+    .tools-grid label {
+      margin-bottom: 0.15rem;
+      font-size: 0.85rem;
+    }
     .btn {
       padding: 0.6rem 1.25rem;
       background: var(--accent);
       color: #fff;
       border: none;
-      border-radius: 8px;
+      border-radius: 999px;
       font-weight: 600;
       cursor: pointer;
-      font-size: 0.95rem;
+      font-size: 0.9rem;
+      box-shadow: 0 12px 24px rgba(22, 163, 74, 0.35);
+      transition: background 0.12s ease, transform 0.06s ease, box-shadow 0.12s ease;
     }
-    .btn:hover { filter: brightness(1.1); }
-    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .btn:hover {
+      background: var(--accent-hover);
+      transform: translateY(-1px);
+      box-shadow: 0 16px 30px rgba(22, 163, 74, 0.4);
+    }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; box-shadow: none; }
     .btn.secondary {
-      background: var(--surface);
-      color: var(--text);
-      border: 1px solid var(--border);
+      background: #f8fafc;
+      color: var(--text-main);
+      border: 1px solid var(--border-subtle);
+      box-shadow: none;
     }
     .toast {
       position: fixed;
@@ -81,58 +260,143 @@
       left: 50%;
       transform: translateX(-50%);
       padding: 0.6rem 1rem;
-      background: var(--success);
-      color: #0d0d10;
-      border-radius: 8px;
+      background: var(--pill-bg);
+      color: #14532d;
+      border-radius: 999px;
       font-size: 0.9rem;
       font-weight: 500;
       opacity: 0;
       transition: opacity 0.2s;
       pointer-events: none;
+      border: 1px solid rgba(22, 163, 74, 0.35);
     }
     .toast.show { opacity: 1; }
-    .toast.err { background: var(--warn); }
-    .links { margin-top: 1.5rem; }
-    a.link { color: var(--muted); font-size: 0.85rem; margin-right: 1rem; }
-    a.link:hover { color: var(--text); }
+    .toast.err { background: #fef2f2; color: #b91c1c; border-color: rgba(185, 28, 28, 0.4); }
+
+    @media (max-width: 960px) {
+      .app-shell {
+        flex-direction: column;
+        margin: 0.75rem auto 1.5rem;
+      }
+      .sidebar {
+        width: 100%;
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .nav-group-label, .nav-footer {
+        display: none;
+      }
+      .nav-list {
+        flex-direction: row;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+      .grid {
+        grid-template-columns: minmax(0, 1fr);
+      }
+    }
+    @media (max-width: 640px) {
+      body {
+        background: #f9fafb;
+      }
+      .app-shell {
+        padding: 0.5rem;
+      }
+      .sidebar {
+        padding: 0.7rem 0.9rem;
+      }
+      .card {
+        padding: 0.9rem 0.9rem 1rem;
+      }
+    }
   </style>
 </head>
 <body>
-  <h1>Workspace</h1>
-  <p class="sub">Edit the voice agent: system prompt, tools, and welcome message.</p>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-badge">R</div>
+        <div class="brand-text">
+          <span>Receptionist</span>
+          <span>AI call + chat agent</span>
+        </div>
+      </div>
+      <div>
+        <div class="nav-group-label">Workspace</div>
+        <nav class="nav-list">
+          <a href="/" class="nav-item">
+            <span class="icon">💬</span>
+            <span class="label">Chat</span>
+          </a>
+          <a href="/voice" class="nav-item">
+            <span class="icon">📞</span>
+            <span class="label">Live Connect</span>
+          </a>
+          <a href="/workspace" class="nav-item primary">
+            <span class="icon">⚙️</span>
+            <span class="label">Agent workspace</span>
+          </a>
+          <a href="/settings" class="nav-item">
+            <span class="icon">🎛</span>
+            <span class="label">Voice settings</span>
+          </a>
+        </nav>
+      </div>
+      <div class="nav-footer">
+        <div class="nav-pill">
+          <span>●</span>
+          <span>Config</span>
+        </div>
+        <div>Changes here are persisted to data/workspace_config.json.</div>
+      </div>
+    </aside>
 
-  <section>
-    <h2>System prompt</h2>
-    <div class="row">
-      <input type="checkbox" id="useFileDefault" />
-      <label for="useFileDefault" style="margin: 0;">Use file default (app/prompts/system_receptionist.txt)</label>
-    </div>
-    <textarea id="systemPrompt" placeholder="Receptionist system prompt…"></textarea>
-    <p class="hint">When "Use file default" is unchecked, this overrides the prompt file. Changes apply on next voice or chat request.</p>
-  </section>
+    <main class="main">
+      <div class="main-header">
+        <h1>Agent workspace</h1>
+        <p>Shape how the receptionist thinks: system prompt, tools, and voice welcome.</p>
+      </div>
 
-  <section>
-    <h2>Enabled tools</h2>
-    <div id="toolsContainer" class="tools-grid"></div>
-    <p class="hint">Uncheck to disable a tool. When all are unchecked, the agent uses all tools (default).</p>
-  </section>
+      <div class="grid">
+        <section class="card">
+          <section>
+            <h2>System prompt</h2>
+            <div class="row">
+              <input type="checkbox" id="useFileDefault" />
+              <label for="useFileDefault" style="margin: 0;">Use file default (app/prompts/system_receptionist.txt)</label>
+            </div>
+            <textarea id="systemPrompt" placeholder="Receptionist system prompt…"></textarea>
+            <p class="hint">When unchecked, this overrides the prompt file. Changes apply on the next voice or chat request.</p>
+          </section>
 
-  <section>
-    <h2>Welcome message</h2>
-    <input type="text" id="welcomeMessage" placeholder="e.g. Hi, how can I help you today?" />
-    <p class="hint">Override the phrase played when a call starts. Leave empty for time-based default (Good morning/afternoon/evening…).</p>
-  </section>
+          <section>
+            <h2>Enabled tools</h2>
+            <div id="toolsContainer" class="tools-grid"></div>
+            <p class="hint">Uncheck to disable a tool. When all are unchecked, the agent uses all tools (default).</p>
+          </section>
 
-  <div>
-    <button type="button" class="btn" id="saveBtn">Save</button>
-    <button type="button" class="btn secondary" id="resetPromptBtn" style="margin-left: 0.5rem;">Reset prompt to file default</button>
-  </div>
+          <div style="margin-top: 0.2rem;">
+            <button type="button" class="btn" id="saveBtn">Save workspace</button>
+            <button type="button" class="btn secondary" id="resetPromptBtn" style="margin-left: 0.5rem;">Reset prompt to file default</button>
+          </div>
+        </section>
 
-  <div id="toast" class="toast"></div>
-  <div class="links">
-    <a href="/voice" class="link">Voice</a>
-    <a href="/settings" class="link">Settings</a>
-    <a href="/" class="link">← Chat</a>
+        <section class="card">
+          <section>
+            <h2>Welcome message</h2>
+            <input type="text" id="welcomeMessage" placeholder="e.g. Hi, you’ve reached the office — how can I help?" />
+            <p class="hint">Override the phrase played when a call starts. Leave empty for time-based default (Good morning/afternoon/evening…).</p>
+          </section>
+          <section>
+            <h2>Tips</h2>
+            <p class="hint">Use the chat console to iterate on the system prompt, then test the same behavior in Live Connect. Tools like <code>get_current_datetime</code> and <code>get_reference_info</code> are most useful when the prompt explains when to call them.</p>
+          </section>
+        </section>
+      </div>
+
+      <div id="toast" class="toast"></div>
+    </main>
   </div>
 
   <script>
