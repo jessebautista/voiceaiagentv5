@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional
 
 from app.agent import get_agent_response, get_agent_response_with_trace
 from app import voice_elevenlabs as voice
@@ -86,10 +87,62 @@ async def settings_page():
     raise HTTPException(status_code=404, detail="Settings page not found")
 
 
+@app.get("/workspace")
+async def workspace_page():
+    """Serve the workspace page: edit voice agent prompt, tools, welcome message."""
+    workspace_path = STATIC_DIR / "workspace.html"
+    if workspace_path.exists():
+        return FileResponse(workspace_path)
+    raise HTTPException(status_code=404, detail="Workspace page not found")
+
+
 @app.get("/health")
 async def health():
     """Health check for load balancers and monitoring."""
     return {"status": "ok"}
+
+
+# ----- Workspace (edit agent behavior) -----
+
+@app.get("/api/workspace/config")
+async def workspace_get_config():
+    """
+    Return workspace config for the voice agent: system_prompt (override or null),
+    default_system_prompt (from prompts file), enabled_tools (list or null = all),
+    welcome_message (override or null), tool_names (all available).
+    """
+    from app.workspace_config import load_config, ALL_TOOL_NAMES
+    from pathlib import Path
+    prompts_dir = Path(__file__).resolve().parent / "prompts"
+    default_path = prompts_dir / "system_receptionist.txt"
+    default_prompt = default_path.read_text(encoding="utf-8").strip() if default_path.exists() else ""
+    ws = load_config()
+    return {
+        "system_prompt": ws.get("system_prompt"),
+        "default_system_prompt": default_prompt,
+        "enabled_tools": ws.get("enabled_tools"),
+        "welcome_message": ws.get("welcome_message"),
+        "tool_names": ALL_TOOL_NAMES,
+    }
+
+
+class WorkspaceConfigUpdate(BaseModel):
+    """Optional fields for PATCH /api/workspace/config."""
+    system_prompt: Optional[str] = None
+    enabled_tools: Optional[list] = None
+    welcome_message: Optional[str] = None
+
+
+@app.patch("/api/workspace/config")
+async def workspace_patch_config(body: WorkspaceConfigUpdate):
+    """Update workspace config. null for a field means clear override (use file/default)."""
+    from app.workspace_config import patch_config
+    updated = patch_config(
+        system_prompt=body.system_prompt,
+        enabled_tools=body.enabled_tools,
+        welcome_message=body.welcome_message,
+    )
+    return updated
 
 
 @app.post("/chat")

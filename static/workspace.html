@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<!-- static/workspace.html — Edit voice agent: system prompt, enabled tools, welcome message. -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Workspace — Voice Agent</title>
+  <style>
+    :root {
+      --bg: #0d0d10;
+      --surface: #16161c;
+      --border: #2a2a32;
+      --text: #e8e8ed;
+      --muted: #8888a0;
+      --accent: #6366f1;
+      --success: #22c55e;
+      --warn: #f59e0b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "DM Sans", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 1.5rem 1.5rem 2rem;
+      max-width: 560px;
+      margin: 0 auto;
+    }
+    h1 { font-size: 1.35rem; margin: 0 0 0.25rem; }
+    p.sub { color: var(--muted); font-size: 0.875rem; margin: 0 0 1.5rem; }
+    section { margin-bottom: 1.75rem; }
+    section h2 { font-size: 0.95rem; color: var(--muted); margin: 0 0 0.75rem; font-weight: 600; }
+    label { display: block; margin-bottom: 0.5rem; font-size: 0.9rem; }
+    textarea {
+      width: 100%;
+      min-height: 140px;
+      padding: 0.75rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 0.9rem;
+      font-family: inherit;
+      resize: vertical;
+    }
+    textarea:disabled { opacity: 0.8; cursor: not-allowed; }
+    input[type="text"] {
+      width: 100%;
+      padding: 0.6rem 0.75rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 1rem;
+    }
+    input[type="checkbox"] { margin-right: 0.5rem; accent-color: var(--accent); }
+    .row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
+    .hint { font-size: 0.8rem; color: var(--muted); margin-top: 0.35rem; }
+    .tools-grid { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; }
+    .btn {
+      padding: 0.6rem 1.25rem;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.95rem;
+    }
+    .btn:hover { filter: brightness(1.1); }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .btn.secondary {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .toast {
+      position: fixed;
+      bottom: 1.5rem;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 0.6rem 1rem;
+      background: var(--success);
+      color: #0d0d10;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      opacity: 0;
+      transition: opacity 0.2s;
+      pointer-events: none;
+    }
+    .toast.show { opacity: 1; }
+    .toast.err { background: var(--warn); }
+    .links { margin-top: 1.5rem; }
+    a.link { color: var(--muted); font-size: 0.85rem; margin-right: 1rem; }
+    a.link:hover { color: var(--text); }
+  </style>
+</head>
+<body>
+  <h1>Workspace</h1>
+  <p class="sub">Edit the voice agent: system prompt, tools, and welcome message.</p>
+
+  <section>
+    <h2>System prompt</h2>
+    <div class="row">
+      <input type="checkbox" id="useFileDefault" />
+      <label for="useFileDefault" style="margin: 0;">Use file default (app/prompts/system_receptionist.txt)</label>
+    </div>
+    <textarea id="systemPrompt" placeholder="Receptionist system prompt…"></textarea>
+    <p class="hint">When "Use file default" is unchecked, this overrides the prompt file. Changes apply on next voice or chat request.</p>
+  </section>
+
+  <section>
+    <h2>Enabled tools</h2>
+    <div id="toolsContainer" class="tools-grid"></div>
+    <p class="hint">Uncheck to disable a tool. When all are unchecked, the agent uses all tools (default).</p>
+  </section>
+
+  <section>
+    <h2>Welcome message</h2>
+    <input type="text" id="welcomeMessage" placeholder="e.g. Hi, how can I help you today?" />
+    <p class="hint">Override the phrase played when a call starts. Leave empty for time-based default (Good morning/afternoon/evening…).</p>
+  </section>
+
+  <div>
+    <button type="button" class="btn" id="saveBtn">Save</button>
+    <button type="button" class="btn secondary" id="resetPromptBtn" style="margin-left: 0.5rem;">Reset prompt to file default</button>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <div class="links">
+    <a href="/voice" class="link">Voice</a>
+    <a href="/settings" class="link">Settings</a>
+    <a href="/" class="link">← Chat</a>
+  </div>
+
+  <script>
+    const API = window.location.origin;
+    const systemPromptEl = document.getElementById("systemPrompt");
+    const useFileDefaultEl = document.getElementById("useFileDefault");
+    const toolsContainerEl = document.getElementById("toolsContainer");
+    const welcomeMessageEl = document.getElementById("welcomeMessage");
+    const saveBtnEl = document.getElementById("saveBtn");
+    const resetPromptBtnEl = document.getElementById("resetPromptBtn");
+    const toastEl = document.getElementById("toast");
+
+    let defaultSystemPrompt = "";
+    let toolNames = [];
+
+    function showToast(msg, isError) {
+      toastEl.textContent = msg;
+      toastEl.classList.toggle("err", !!isError);
+      toastEl.classList.add("show");
+      setTimeout(() => toastEl.classList.remove("show"), 2500);
+    }
+
+    async function loadConfig() {
+      try {
+        const r = await fetch(API + "/api/workspace/config");
+        if (!r.ok) throw new Error("Failed to load config");
+        const data = await r.json();
+        defaultSystemPrompt = data.default_system_prompt || "";
+        toolNames = data.tool_names || [];
+        const useFileDefault = data.system_prompt == null;
+        useFileDefaultEl.checked = useFileDefault;
+        systemPromptEl.value = (data.system_prompt != null ? data.system_prompt : defaultSystemPrompt) || "";
+        systemPromptEl.disabled = useFileDefault;
+
+        toolsContainerEl.innerHTML = "";
+        const enabled = data.enabled_tools || toolNames;
+        toolNames.forEach(function (name) {
+          const label = document.createElement("label");
+          label.className = "row";
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.dataset.tool = name;
+          cb.checked = enabled.indexOf(name) !== -1;
+          label.appendChild(cb);
+          label.appendChild(document.createTextNode(name));
+          toolsContainerEl.appendChild(label);
+        });
+
+        welcomeMessageEl.value = data.welcome_message || "";
+      } catch (e) {
+        showToast("Could not load config: " + e.message, true);
+      }
+    }
+
+    useFileDefaultEl.addEventListener("change", function () {
+      const useDefault = useFileDefaultEl.checked;
+      systemPromptEl.disabled = useDefault;
+      if (useDefault) systemPromptEl.value = defaultSystemPrompt;
+    });
+
+    resetPromptBtnEl.addEventListener("click", function () {
+      useFileDefaultEl.checked = false;
+      systemPromptEl.disabled = false;
+      systemPromptEl.value = defaultSystemPrompt;
+    });
+
+    saveBtnEl.addEventListener("click", async function () {
+      saveBtnEl.disabled = true;
+      try {
+        const system_prompt = useFileDefaultEl.checked ? null : systemPromptEl.value.trim() || null;
+        const checked = Array.from(toolsContainerEl.querySelectorAll("input[type=checkbox]:checked")).map(function (c) { return c.dataset.tool; });
+        const enabled_tools = checked.length === toolNames.length ? null : checked;
+        const welcome_message = welcomeMessageEl.value.trim() || null;
+
+        const r = await fetch(API + "/api/workspace/config", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ system_prompt: system_prompt, enabled_tools: enabled_tools, welcome_message: welcome_message }),
+        });
+        if (!r.ok) throw new Error("Save failed");
+        showToast("Saved. Voice agent will use the new settings on the next request.");
+      } catch (e) {
+        showToast("Save failed: " + e.message, true);
+      } finally {
+        saveBtnEl.disabled = false;
+      }
+    });
+
+    window.addEventListener("load", loadConfig);
+  </script>
+</body>
+</html>

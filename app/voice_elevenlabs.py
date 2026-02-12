@@ -34,7 +34,17 @@ def _get_client():
 
 
 def get_welcome_phrase() -> str:
-    """Time-based welcome for Live Connect (e.g. 'Good morning, how can I help you?')."""
+    """
+    Welcome phrase for Live Connect. Uses workspace config welcome_message if set;
+    otherwise time-based default (e.g. 'Good morning, how can I help you?').
+    """
+    try:
+        from app.workspace_config import load_config
+        ws = load_config()
+        if ws.get("welcome_message") and ws["welcome_message"].strip():
+            return ws["welcome_message"].strip()
+    except Exception:
+        pass
     hour = datetime.now().hour
     if hour < 12:
         greeting = "Good morning"
