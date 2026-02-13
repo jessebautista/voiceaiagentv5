@@ -1,5 +1,6 @@
-# main.py — Entry point: Starts the FastAPI server, serves the web UI, and routes
-# chat requests to the agent. Handles CORS and static files for the simple web interface.
+# main.py — Entry point: FastAPI server, web UI (chat, voice, workspace, settings),
+# chat and voice routes to the agent, workspace config API (per-agent overrides,
+# tools, welcome). Handles CORS and static files.
 
 import os
 from pathlib import Path
@@ -107,18 +108,20 @@ async def health():
 @app.get("/api/workspace/config")
 async def workspace_get_config():
     """
-    Return workspace config for the voice agent: system_prompt (override or null),
-    default_system_prompt (from prompts file), enabled_tools (list or null = all),
-    welcome_message (override or null), tool_names (all available).
+    Return workspace config: prompt_key, prompt_keys, system_prompt (override for current
+    agent from data/prompt_overrides/{key}.txt or null), default_system_prompt (base file),
+    enabled_tools, welcome_message, tool_names.
     """
-    from app.workspace_config import load_config, ALL_TOOL_NAMES
-    from pathlib import Path
-    prompts_dir = Path(__file__).resolve().parent / "prompts"
-    default_path = prompts_dir / "system_receptionist.txt"
-    default_prompt = default_path.read_text(encoding="utf-8").strip() if default_path.exists() else ""
+    from app.workspace_config import load_config, get_prompt_override, ALL_TOOL_NAMES, ALL_PROMPT_KEYS
+    from app.agent import _read_prompt_for_key
     ws = load_config()
+    pk = ws.get("prompt_key") or "receptionist"
+    default_prompt = _read_prompt_for_key(pk)
+    override = get_prompt_override(pk)
     return {
-        "system_prompt": ws.get("system_prompt"),
+        "prompt_key": pk,
+        "prompt_keys": ALL_PROMPT_KEYS,
+        "system_prompt": override,
         "default_system_prompt": default_prompt,
         "enabled_tools": ws.get("enabled_tools"),
         "welcome_message": ws.get("welcome_message"),
@@ -127,18 +130,22 @@ async def workspace_get_config():
 
 
 class WorkspaceConfigUpdate(BaseModel):
-    """Optional fields for PATCH /api/workspace/config."""
-    system_prompt: Optional[str] = None
+    """Optional fields for PATCH /api/workspace/config. system_prompt_override writes to data/prompt_overrides/{prompt_key}.txt."""
+    prompt_key: Optional[str] = None
+    system_prompt: Optional[str] = None  # backward compat: treated as system_prompt_override
+    system_prompt_override: Optional[str] = None
     enabled_tools: Optional[list] = None
     welcome_message: Optional[str] = None
 
 
 @app.patch("/api/workspace/config")
 async def workspace_patch_config(body: WorkspaceConfigUpdate):
-    """Update workspace config. null for a field means clear override (use file/default)."""
+    """Update workspace config. Override is stored per-agent in data/prompt_overrides/{prompt_key}.txt."""
     from app.workspace_config import patch_config
+    override = body.system_prompt_override if body.system_prompt_override is not None else body.system_prompt
     updated = patch_config(
-        system_prompt=body.system_prompt,
+        prompt_key=body.prompt_key,
+        system_prompt_override=override,
         enabled_tools=body.enabled_tools,
         welcome_message=body.welcome_message,
     )

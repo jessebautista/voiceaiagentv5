@@ -1,6 +1,6 @@
 # agent.py — Orchestrator: Defines the "Brain" by wiring the LLM to tools (search_faq,
-# booking, calculator, etc.) and optional Redis memory. Uses LangGraph's create_react_agent.
-# System prompt and enabled tools can be overridden via workspace config (data/workspace_config.json).
+# booking, Supabase CRUD, etc.). Uses LangGraph's create_react_agent. Prompt and tools
+# come from workspace config (prompt_key, per-agent override in data/prompt_overrides, enabled_tools).
 
 import os
 from pathlib import Path
@@ -15,6 +15,8 @@ from app.tools.booking import create_booking, list_available_slots
 from app.tools.calculator import calculate
 from app.tools.current_datetime import get_current_datetime
 from app.tools.reference_json import get_reference_info
+from app.tools.query_builder import build_supabase_query, list_supabase_tables
+from app.tools.query_processor import execute_supabase_query
 
 # Name -> tool for workspace enable/disable
 TOOLS_BY_NAME = {
@@ -24,10 +26,14 @@ TOOLS_BY_NAME = {
     "calculate": calculate,
     "get_current_datetime": get_current_datetime,
     "get_reference_info": get_reference_info,
+    "list_supabase_tables": list_supabase_tables,
+    "build_supabase_query": build_supabase_query,
+    "execute_supabase_query": execute_supabase_query,
 }
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
-SYSTEM_PROMPT_PATH = PROMPTS_DIR / "system_receptionist.txt"
+# Map workspace prompt_key to prompt filename (without .txt)
+PROMPT_KEY_TO_FILE = {"receptionist": "system_receptionist", "supabase_receptionist": "supabase_receptionist"}
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful receptionist. Answer questions using the FAQ when relevant, "
     "help with bookings when asked, and use the calculator for pricing or math. "
@@ -35,16 +41,22 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
-def _read_default_system_prompt() -> str:
-    if SYSTEM_PROMPT_PATH.exists():
-        return SYSTEM_PROMPT_PATH.read_text().strip()
+def _read_prompt_for_key(prompt_key: str) -> str:
+    """Load base prompt from app/prompts/{filename}.txt for the given prompt_key."""
+    filename = PROMPT_KEY_TO_FILE.get(prompt_key, "system_receptionist")
+    path = PROMPTS_DIR / f"{filename}.txt"
+    if path.exists():
+        return path.read_text().strip()
     return DEFAULT_SYSTEM_PROMPT
 
 
 def _get_system_prompt(workspace: dict) -> str:
-    if workspace.get("system_prompt"):
-        return workspace["system_prompt"].strip()
-    return _read_default_system_prompt()
+    from app.workspace_config import get_prompt_override
+    prompt_key = workspace.get("prompt_key") or "receptionist"
+    override = get_prompt_override(prompt_key)
+    if override:
+        return override
+    return _read_prompt_for_key(prompt_key)
 
 
 def _get_enabled_tools(workspace: dict):
@@ -90,7 +102,11 @@ async def get_agent_response(
     """
     from app.callbacks import LoggingCallbackHandler
     handlers = callbacks if callbacks is not None else [LoggingCallbackHandler()]
-    config = {"configurable": {"thread_id": session_id}, "callbacks": handlers}
+    config = {
+        "configurable": {"thread_id": session_id},
+        "callbacks": handlers,
+        "recursion_limit": 50,  # allow multi-step tool flows (e.g. Supabase list → build → execute)
+    }
     agent = get_agent()
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content=user_message)]},
@@ -144,7 +160,11 @@ async def get_agent_response_with_trace(
     """Run the agent for one user turn; return (final_reply, trace)."""
     from app.callbacks import LoggingCallbackHandler
     handlers = callbacks if callbacks is not None else [LoggingCallbackHandler()]
-    config = {"configurable": {"thread_id": session_id}, "callbacks": handlers}
+    config = {
+        "configurable": {"thread_id": session_id},
+        "callbacks": handlers,
+        "recursion_limit": 50,  # allow multi-step tool flows (e.g. Supabase list → build → execute)
+    }
     agent = get_agent()
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content=user_message)]},

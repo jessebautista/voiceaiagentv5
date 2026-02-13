@@ -230,6 +230,20 @@
       margin-bottom: 0.15rem;
       font-size: 0.85rem;
     }
+    select {
+      width: 100%;
+      max-width: 320px;
+      padding: 0.55rem 0.75rem;
+      background: #f8fafc;
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      color: var(--text-main);
+      font-size: 0.9rem;
+    }
+    select:focus {
+      outline: none;
+      border-color: rgba(22, 163, 74, 0.6);
+    }
     .btn {
       padding: 0.6rem 1.25rem;
       background: var(--accent);
@@ -361,13 +375,22 @@
       <div class="grid">
         <section class="card">
           <section>
-            <h2>System prompt</h2>
+            <h2>Agent prompt (Live Connect &amp; Chat)</h2>
+            <label for="promptKey">Base prompt</label>
+            <select id="promptKey">
+              <option value="receptionist">Demo receptionist</option>
+              <option value="supabase_receptionist">Supabase receptionist (CRUD)</option>
+            </select>
+            <p class="hint">Choose which agent personality and capabilities to use. Demo = FAQ, booking, calculator. Supabase = same plus CRUD on news, piano applications, piano activations.</p>
+          </section>
+          <section>
+            <h2>System prompt override</h2>
             <div class="row">
               <input type="checkbox" id="useFileDefault" />
-              <label for="useFileDefault" style="margin: 0;">Use file default (app/prompts/system_receptionist.txt)</label>
+              <label for="useFileDefault" style="margin: 0;" id="useFileDefaultLabel">Use file default</label>
             </div>
             <textarea id="systemPrompt" placeholder="Receptionist system prompt…"></textarea>
-            <p class="hint">When unchecked, this overrides the prompt file. Changes apply on the next voice or chat request.</p>
+            <p class="hint">When unchecked, this overrides the base prompt file. Changes apply on the next voice or chat request.</p>
           </section>
 
           <section>
@@ -401,6 +424,8 @@
 
   <script>
     const API = window.location.origin;
+    const promptKeyEl = document.getElementById("promptKey");
+    const useFileDefaultLabelEl = document.getElementById("useFileDefaultLabel");
     const systemPromptEl = document.getElementById("systemPrompt");
     const useFileDefaultEl = document.getElementById("useFileDefault");
     const toolsContainerEl = document.getElementById("toolsContainer");
@@ -409,6 +434,7 @@
     const resetPromptBtnEl = document.getElementById("resetPromptBtn");
     const toastEl = document.getElementById("toast");
 
+    const promptKeyToFile = { receptionist: "system_receptionist.txt", supabase_receptionist: "supabase_receptionist.txt" };
     let defaultSystemPrompt = "";
     let toolNames = [];
 
@@ -419,11 +445,32 @@
       setTimeout(() => toastEl.classList.remove("show"), 2500);
     }
 
+    function setFileDefaultLabel() {
+      const pk = promptKeyEl.value;
+      const f = promptKeyToFile[pk] || "system_receptionist.txt";
+      useFileDefaultLabelEl.textContent = "Use base prompt (app/prompts/" + f + "). Override: data/prompt_overrides/" + pk + ".txt";
+    }
+
     async function loadConfig() {
       try {
         const r = await fetch(API + "/api/workspace/config");
         if (!r.ok) throw new Error("Failed to load config");
         const data = await r.json();
+        const pk = data.prompt_key || "receptionist";
+        if (data.prompt_keys && data.prompt_keys.length) {
+          promptKeyEl.innerHTML = "";
+          const labels = { receptionist: "Demo receptionist", supabase_receptionist: "Supabase receptionist (CRUD)" };
+          data.prompt_keys.forEach(function (k) {
+            const opt = document.createElement("option");
+            opt.value = k;
+            opt.textContent = labels[k] || k;
+            if (k === pk) opt.selected = true;
+            promptKeyEl.appendChild(opt);
+          });
+        } else {
+          promptKeyEl.value = pk;
+        }
+        setFileDefaultLabel();
         defaultSystemPrompt = data.default_system_prompt || "";
         toolNames = data.tool_names || [];
         const useFileDefault = data.system_prompt == null;
@@ -451,6 +498,23 @@
       }
     }
 
+    promptKeyEl.addEventListener("change", async function () {
+      const pk = promptKeyEl.value;
+      try {
+        const r = await fetch(API + "/api/workspace/config", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt_key: pk }),
+        });
+        if (!r.ok) throw new Error("Update failed");
+        await loadConfig();
+        if (useFileDefaultEl.checked) systemPromptEl.value = defaultSystemPrompt;
+        showToast("Base prompt set to " + (pk === "supabase_receptionist" ? "Supabase receptionist" : "Demo receptionist") + ".");
+      } catch (e) {
+        showToast("Could not switch prompt: " + e.message, true);
+      }
+    });
+
     useFileDefaultEl.addEventListener("change", function () {
       const useDefault = useFileDefaultEl.checked;
       systemPromptEl.disabled = useDefault;
@@ -466,6 +530,7 @@
     saveBtnEl.addEventListener("click", async function () {
       saveBtnEl.disabled = true;
       try {
+        const prompt_key = promptKeyEl.value;
         const system_prompt = useFileDefaultEl.checked ? null : systemPromptEl.value.trim() || null;
         const checked = Array.from(toolsContainerEl.querySelectorAll("input[type=checkbox]:checked")).map(function (c) { return c.dataset.tool; });
         const enabled_tools = checked.length === toolNames.length ? null : checked;
@@ -474,7 +539,7 @@
         const r = await fetch(API + "/api/workspace/config", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ system_prompt: system_prompt, enabled_tools: enabled_tools, welcome_message: welcome_message }),
+          body: JSON.stringify({ prompt_key: prompt_key, system_prompt: system_prompt, enabled_tools: enabled_tools, welcome_message: welcome_message }),
         });
         if (!r.ok) throw new Error("Save failed");
         showToast("Saved. Voice agent will use the new settings on the next request.");

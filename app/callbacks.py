@@ -1,5 +1,6 @@
 # callbacks.py — LangChain callback handler that logs tool calls and LLM activity
-# to the console for observability.
+# to the console for observability. on_tool_end accepts either a string or a
+# ToolMessage (LangGraph) and normalizes to string for logging.
 
 import logging
 from typing import Any, Dict, List, Optional
@@ -42,7 +43,12 @@ class LoggingCallbackHandler(BaseCallbackHandler):
         name = serialized.get("name", "?")
         logger.info("Tool started: %s | input: %s", name, _truncate(input_str))
 
-    def on_tool_end(self, output: str, **kwargs: Any) -> None:
+    def on_tool_end(self, output: Any, **kwargs: Any) -> None:
+        # LangGraph may pass a ToolMessage; normalize to string for logging
+        if hasattr(output, "content"):
+            output = output.content if output.content is not None else ""
+        else:
+            output = str(output) if output is not None else ""
         logger.info("Tool ended | output: %s", _truncate(output))
 
     def on_tool_error(self, error: BaseException, **kwargs: Any) -> None:

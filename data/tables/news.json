@@ -1,0 +1,29 @@
+{
+  "table": "news",
+  "description": "Blog and article records. Users often add new records or update by news_title, news_url, or id.",
+  "lookup_fields": ["id", "news_title", "news_url"],
+  "primary_key": "id",
+  "columns": {
+    "idx": { "type": "number", "editable": false },
+    "id": { "type": "number", "editable": false },
+    "created_at": { "type": "string", "editable": false },
+    "news_title": { "type": "string", "editable": true },
+    "news_content": { "type": "string", "editable": true },
+    "news_date": { "type": "string", "editable": true },
+    "news_author": { "type": "string", "editable": true },
+    "news_excerpt": { "type": "string", "editable": true },
+    "news_status": { "type": "string", "editable": true },
+    "news_url": { "type": "string", "editable": true },
+    "news_updated": { "type": "string", "editable": true },
+    "news_image": { "type": "string", "editable": true },
+    "news_categories": { "type": "string", "editable": true },
+    "tiny": { "type": "string", "editable": true },
+    "featured_order": { "type": "number", "editable": true },
+    "featured": { "type": "boolean", "editable": true },
+    "draft": { "type": "boolean", "editable": true },
+    "related_program": { "type": "string", "editable": true },
+    "newscontent": { "type": "string", "editable": true },
+    "sun": { "type": "string", "editable": true },
+    "news_image_caption": { "type": "string", "editable": true }
+  }
+}
