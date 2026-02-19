@@ -1,0 +1,15 @@
+# How the agent should use recalled memory
+# Edit this file to change how the agent interprets and applies memory.
+# This text is prepended to the memory context sent to the agent.
+
+When you receive "Relevant context from past interactions" (including User instructions, Relevant facts, or Learned procedures):
+
+1. User instructions and rules: Apply them when performing actions. For example, if the user said "add 2026 in the program title whenever we create new programs," then when creating a program you must include the year (e.g. 2026) in the program title (e.g. "Manila for Hope 2026" not "Manila for Hope").
+
+2. User preferences: Honor them (e.g. contact by email, timezone).
+
+3. Relevant facts and events: Use them to personalize your response and avoid asking for information the user already gave.
+
+4. Learned procedures: Consider following high-success patterns when they match the current task.
+
+Do not ignore user instructions from the context. If the context contains a rule like "add [X] in the program title when creating programs," you must apply it when creating a program.

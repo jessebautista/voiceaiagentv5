@@ -30,12 +30,13 @@ Set these up before running the project so your team can run it from scratch.
 │   ├── workspace_config.py  # Read/write workspace config (prompt_key, per-agent overrides, enabled tools, welcome)
 │   ├── supabase_client.py   # Supabase client for CRUD (optional; requires SUPABASE_* in .env)
 │   ├── tables_config.py    # Loads data/tables/*.json for LLM and query builder
-│   ├── memory/              # Optional Redis chat history
+│   ├── memory/              # Stateful AI memory: episodic (facts/preferences/events), procedural (learned patterns), recall (cost-controlled)
 │   └── prompts/             # Base prompts: system_receptionist.txt, supabase_receptionist.txt
 ├── data/
 │   ├── reference.json       # Reference data for get_reference_info tool
 │   ├── workspace_config.json# Workspace settings (prompt_key, enabled tools, welcome; edited via /workspace UI)
 │   ├── prompt_overrides/    # Per-agent prompt override: receptionist.txt, supabase_receptionist.txt (optional)
+│   ├── memory/              # Editable memory instructions: agent_instructions.txt (how the agent should use recalled context)
 │   └── tables/              # Per-table config for Supabase: news.json, piano_applications.json, piano_activations.json, etc.
 ├── scripts/
 │   └── seed_upstash.py      # Seed Upstash with sample FAQ and chat data
@@ -100,7 +101,7 @@ Which tools are enabled, and which **base prompt** (Demo vs Supabase receptionis
 
 ## Observability
 
-- **Console logging**: Each request logs `session_id` and message preview; each response logs reply length. Tool calls (name + input/output) are logged via `app.callbacks.LoggingCallbackHandler` (handles both string and ToolMessage output from LangGraph).
+- **Console logging**: Each request logs `session_id` and message preview; each response logs reply length. Tool calls (name + input/output) are logged via `app.callbacks.LoggingCallbackHandler` (handles both string and ToolMessage output from LangGraph). Memory extraction (facts, procedures) happens silently after each response; failures don't break the conversation.
 - **Voice/trace UI**: The `/voice` page calls `/chat` with `include_observability=true` and renders a live **Agent trace** panel (input → LLM steps → tool calls → tool results) so you can see how the agent reasoned.
 - **Recursion limit**: The agent uses a recursion limit of 50 so multi-step tool flows (e.g. list_supabase_tables → build_supabase_query → execute_supabase_query → answer) can complete without hitting the default cap.
 - **Log level**: Set `LOG_LEVEL=DEBUG` in `.env` for noisier logs (e.g. agent actions).
@@ -164,7 +165,33 @@ The agent uses **list_supabase_tables** to see available tables and fields, **bu
 
 **Required:** `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` (or `SUPABASE_ANON_KEY`) in `.env`. Use the service role key for server-side CRUD if your policy allows.
 
+## Stateful AI Memory (Redis)
+
+The agent uses **Redis** for episodic and procedural memory to enable stateful behavior across sessions:
+
+- **Episodic memory** (`app/memory/episodic.py`): Stores user facts, preferences, and **user instructions** (e.g. "add 2026 in the program title when creating programs"), and past events. Extracted from conversations (including phrases like "moving forward", "make sure that", "whenever we create") and stored in Redis with user-scoped keys (`user:{id}:facts`, `user:{id}:preferences`, `user:{id}:events`).
+- **Procedural memory** (`app/memory/procedural.py`): Tracks learned patterns and successful workflows (e.g. "update_program" procedure with success rate, common steps). Stored as `procedure:{name}` and `user:{id}:procedure:{name}` in Redis.
+- **Cost-controlled recall** (`app/memory/recall.py`): Retrieves relevant memories with token budgeting (~500 tokens default). Prioritizes preferences, recent relevant facts, events, and learned procedures. Injected into agent context before each request.
+- **Memory extraction**: After each conversation turn, the agent extracts facts (rule-based, can be enhanced with LLM) and stores them in Redis. Procedure executions are tracked automatically.
+
+**Architecture:**
+- **Supabase** = Ledger (source of truth for domain data: news, applications, activations)
+- **Redis** = Memory layer (episodic + procedural, cost-controlled recall)
+- **LangGraph MemorySaver** = Working memory (current session conversation)
+
+**Redis keys:**
+- `user:{user_id}:facts` — List of episodic facts (including "User instruction: …" rules)
+- `user:{user_id}:preferences` — User preferences dict
+- `user:{user_id}:events` — List of past events
+- `procedure:{name}` — Global procedure patterns
+- `user:{user_id}:procedure:{name}` — User-specific procedures
+
+**Memory instruction files (editable):**  
+You can tune how the agent uses recalled memory without changing code. Place **`data/memory/agent_instructions.txt`** with instructions such as: "When context includes User instructions, apply them when performing actions (e.g. add 2026 in program titles when the user asked for it)." Comment lines (starting with `#`) are ignored. This file is loaded by `app/memory/recall.py` and prepended to the memory context sent to the agent on each turn.
+
+**Required:** `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` or `REDIS_URL` in `.env`. If Redis is unavailable, the agent falls back gracefully (no memory recall, but conversation still works).
+
 ## Optional
 
-- **Redis / Upstash**: Set `UPSTASH_REDIS_REST_*` or `REDIS_URL` in `.env` to use `memory/redis_store` for custom persistence.
+- **Redis / Upstash**: Set `UPSTASH_REDIS_REST_*` or `REDIS_URL` in `.env` for stateful AI memory (episodic/procedural) and FAQ storage. The agent works without Redis but won't have cross-session memory.
 - **RAG**: Add a vector store and point `search_faq` at embeddings of `data/company_faq.pdf`.

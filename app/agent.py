@@ -1,6 +1,7 @@
 # agent.py — Orchestrator: Defines the "Brain" by wiring the LLM to tools (search_faq,
 # booking, Supabase CRUD, etc.). Uses LangGraph's create_react_agent. Prompt and tools
 # come from workspace config (prompt_key, per-agent override in data/prompt_overrides, enabled_tools).
+# Integrates episodic and procedural memory recall (Redis) for stateful AI behavior.
 
 import os
 from pathlib import Path
@@ -50,13 +51,20 @@ def _read_prompt_for_key(prompt_key: str) -> str:
     return DEFAULT_SYSTEM_PROMPT
 
 
-def _get_system_prompt(workspace: dict) -> str:
+def _get_system_prompt(workspace: dict, memory_context: str = "") -> str:
+    """
+    Get system prompt with optional memory context injected.
+    memory_context: Formatted string from recall_memories_for_agent (empty if no memories).
+    """
     from app.workspace_config import get_prompt_override
     prompt_key = workspace.get("prompt_key") or "receptionist"
     override = get_prompt_override(prompt_key)
-    if override:
-        return override
-    return _read_prompt_for_key(prompt_key)
+    base_prompt = override if override else _read_prompt_for_key(prompt_key)
+    
+    # Inject memory context if provided
+    if memory_context:
+        return f"{base_prompt}{memory_context}"
+    return base_prompt
 
 
 def _get_enabled_tools(workspace: dict):
@@ -79,14 +87,20 @@ _agent = None
 _agent_config_hash = None
 
 
-def get_agent():
-    """Return the react agent, built from current workspace config (prompt + enabled tools)."""
+def get_agent(memory_context: str = ""):
+    """
+    Return the react agent, built from current workspace config (prompt + enabled tools).
+    memory_context: Optional memory context to inject into prompt (typically empty here;
+    memory is injected per-request in get_agent_response).
+    """
     global _agent, _agent_config_hash
     from app.workspace_config import load_config, config_hash
     ws = load_config()
     h = config_hash(ws)
+    # Note: memory_context changes per request, so we don't cache agent with it
+    # Instead, we inject memory in get_agent_response before invoking
     if _agent_config_hash != h:
-        prompt = _get_system_prompt(ws)
+        prompt = _get_system_prompt(ws, memory_context="")
         tools = _get_enabled_tools(ws)
         _agent = create_react_agent(llm, tools, checkpointer=checkpointer, prompt=prompt)
         _agent_config_hash = h
@@ -99,9 +113,34 @@ async def get_agent_response(
     """
     Run the agent for one user turn and return the final assistant reply.
     Uses session_id as thread_id so conversation history is preserved.
+    Recalls episodic/procedural memories and extracts new facts after response.
     """
     from app.callbacks import LoggingCallbackHandler
+    from app.memory.recall import recall_memories_for_agent
+    from app.memory.episodic import (
+        extract_facts_from_conversation,
+        store_fact,
+        store_event,
+        extract_user_id,
+    )
+    from app.memory.procedural import (
+        infer_procedure_name,
+        record_procedure_execution,
+    )
+    
     handlers = callbacks if callbacks is not None else [LoggingCallbackHandler()]
+    
+    # Recall relevant memories (cost-controlled, ~500 tokens)
+    memory_context = recall_memories_for_agent(session_id, user_message, max_tokens=500)
+    
+    # If memory context exists, inject it into the first message
+    # Note: LangGraph's create_react_agent uses the system prompt, but we can also
+    # inject memory as a system message or prepend to user message
+    enhanced_user_message = user_message
+    if memory_context:
+        # Prepend memory context to user message so agent sees it
+        enhanced_user_message = f"[Context from past interactions: {memory_context.strip()}]\n\n{user_message}"
+    
     config = {
         "configurable": {"thread_id": session_id},
         "callbacks": handlers,
@@ -109,14 +148,53 @@ async def get_agent_response(
     }
     agent = get_agent()
     result = await agent.ainvoke(
-        {"messages": [HumanMessage(content=user_message)]},
+        {"messages": [HumanMessage(content=enhanced_user_message)]},
         config=config,
     )
     messages = result.get("messages", [])
+    
+    # Extract final reply
+    reply = "I didn't generate a reply. Please try again."
     for msg in reversed(messages):
         if isinstance(msg, AIMessage) and msg.content:
-            return msg.content
-    return "I didn't generate a reply. Please try again."
+            reply = msg.content
+            break
+    
+    # Extract and store memories after response
+    try:
+        user_id = extract_user_id(session_id)
+        # Extract facts from conversation
+        facts = extract_facts_from_conversation(session_id, user_message, reply, messages)
+        for fact in facts:
+            store_fact(user_id, fact, confidence=0.8)
+        
+        # Track procedure execution if applicable
+        tool_calls = []
+        for msg in messages:
+            if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls"):
+                tool_calls.extend(msg.tool_calls or [])
+        
+        proc_name = infer_procedure_name(user_message, tool_calls)
+        if proc_name:
+            # Determine success (simple: if we got a reply and no errors)
+            success = reply and "error" not in reply.lower() and "trouble" not in reply.lower()
+            record_procedure_execution(
+                proc_name,
+                success=success,
+                steps=[tc.get("name", "") for tc in tool_calls if tc.get("name")],
+                user_id=user_id,
+            )
+        
+        # Store event if significant action occurred
+        if tool_calls:
+            action_names = [tc.get("name", "") for tc in tool_calls]
+            if "execute_supabase_query" in action_names:
+                store_event(user_id, f"Executed database operation: {proc_name or 'unknown'}")
+    except Exception:
+        # Memory extraction failures shouldn't break the response
+        pass
+    
+    return reply
 
 
 def _messages_to_trace(messages: list, user_message: str) -> list:
@@ -157,9 +235,31 @@ def _messages_to_trace(messages: list, user_message: str) -> list:
 async def get_agent_response_with_trace(
     session_id: str, user_message: str, callbacks: list = None
 ) -> tuple:
-    """Run the agent for one user turn; return (final_reply, trace)."""
+    """
+    Run the agent for one user turn; return (final_reply, trace).
+    Includes memory recall and extraction (same as get_agent_response).
+    """
     from app.callbacks import LoggingCallbackHandler
+    from app.memory.recall import recall_memories_for_agent
+    from app.memory.episodic import (
+        extract_facts_from_conversation,
+        store_fact,
+        store_event,
+        extract_user_id,
+    )
+    from app.memory.procedural import (
+        infer_procedure_name,
+        record_procedure_execution,
+    )
+    
     handlers = callbacks if callbacks is not None else [LoggingCallbackHandler()]
+    
+    # Recall relevant memories
+    memory_context = recall_memories_for_agent(session_id, user_message, max_tokens=500)
+    enhanced_user_message = user_message
+    if memory_context:
+        enhanced_user_message = f"[Context from past interactions: {memory_context.strip()}]\n\n{user_message}"
+    
     config = {
         "configurable": {"thread_id": session_id},
         "callbacks": handlers,
@@ -167,7 +267,7 @@ async def get_agent_response_with_trace(
     }
     agent = get_agent()
     result = await agent.ainvoke(
-        {"messages": [HumanMessage(content=user_message)]},
+        {"messages": [HumanMessage(content=enhanced_user_message)]},
         config=config,
     )
     messages = result.get("messages", [])
@@ -176,4 +276,34 @@ async def get_agent_response_with_trace(
         if isinstance(msg, AIMessage) and msg.content:
             reply = msg.content
             break
+    
+    # Extract and store memories
+    try:
+        user_id = extract_user_id(session_id)
+        facts = extract_facts_from_conversation(session_id, user_message, reply, messages)
+        for fact in facts:
+            store_fact(user_id, fact, confidence=0.8)
+        
+        tool_calls = []
+        for msg in messages:
+            if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls"):
+                tool_calls.extend(msg.tool_calls or [])
+        
+        proc_name = infer_procedure_name(user_message, tool_calls)
+        if proc_name:
+            success = reply and "error" not in reply.lower() and "trouble" not in reply.lower()
+            record_procedure_execution(
+                proc_name,
+                success=success,
+                steps=[tc.get("name", "") for tc in tool_calls if tc.get("name")],
+                user_id=user_id,
+            )
+        
+        if tool_calls:
+            action_names = [tc.get("name", "") for tc in tool_calls]
+            if "execute_supabase_query" in action_names:
+                store_event(user_id, f"Executed database operation: {proc_name or 'unknown'}")
+    except Exception:
+        pass
+    
     return reply, _messages_to_trace(messages, user_message)
