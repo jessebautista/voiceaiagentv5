@@ -17,6 +17,7 @@ from app.tools.current_datetime import get_current_datetime
 from app.tools.reference_json import get_reference_info
 from app.tools.query_builder import build_supabase_query, list_supabase_tables
 from app.tools.query_processor import execute_supabase_query
+from app.tools.web_fetcher import fetch_web_page
 
 # Name -> tool for workspace enable/disable
 TOOLS_BY_NAME = {
@@ -29,6 +30,7 @@ TOOLS_BY_NAME = {
     "list_supabase_tables": list_supabase_tables,
     "build_supabase_query": build_supabase_query,
     "execute_supabase_query": execute_supabase_query,
+    "fetch_web_page": fetch_web_page,
 }
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"

@@ -23,6 +23,7 @@ ALL_TOOL_NAMES = [
     "list_supabase_tables",
     "build_supabase_query",
     "execute_supabase_query",
+    "fetch_web_page",
 ]
 
 

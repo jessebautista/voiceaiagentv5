@@ -9,6 +9,7 @@ from app.tools.current_datetime import get_current_datetime
 from app.tools.reference_json import get_reference_info
 from app.tools.query_builder import build_supabase_query, list_supabase_tables
 from app.tools.query_processor import execute_supabase_query
+from app.tools.web_fetcher import fetch_web_page
 
 __all__ = [
     "search_faq",
@@ -20,4 +21,5 @@ __all__ = [
     "list_supabase_tables",
     "build_supabase_query",
     "execute_supabase_query",
+    "fetch_web_page",
 ]
