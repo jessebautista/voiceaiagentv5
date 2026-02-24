@@ -18,6 +18,12 @@ from app.tools.current_datetime import get_current_datetime
 from app.tools.reference_json import get_reference_info
 from app.tools.query_builder import build_supabase_query, list_supabase_tables
 from app.tools.query_processor import execute_supabase_query
+from app.tools.email_check import (
+    search_emails_tool,
+    get_email_content_tool,
+    parse_email_attachment_tool,
+    get_google_doc_text_tool,
+)
 
 # Name -> tool for workspace enable/disable
 TOOLS_BY_NAME = {
@@ -30,6 +36,10 @@ TOOLS_BY_NAME = {
     "list_supabase_tables": list_supabase_tables,
     "build_supabase_query": build_supabase_query,
     "execute_supabase_query": execute_supabase_query,
+    "search_emails_tool": search_emails_tool,
+    "get_email_content_tool": get_email_content_tool,
+    "parse_email_attachment_tool": parse_email_attachment_tool,
+    "get_google_doc_text_tool": get_google_doc_text_tool,
 }
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"

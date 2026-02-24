@@ -19,9 +19,11 @@ upstash-redis>=1.0.0    # for UPSTASH_REDIS_REST_* (Upstash)
 # For seed script (loads .env when running scripts/seed_upstash.py)
 python-dotenv>=1.0.0
 
+# Email check: PDF parsing for forwarded attachments
+pypdf>=4.0.0
+
 # Optional: Vector store + embeddings for RAG (uncomment for full FAQ from PDF)
 # langchain-community>=0.3.0
-# pypdf>=4.0.0
 
 # Voice (Live Connect — ElevenLabs)
 elevenlabs>=1.0.0

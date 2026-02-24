@@ -15,6 +15,7 @@ Set these up before running the project so your team can run it from scratch.
 | **Pinecone** | No | Vector FAQ search (RAG) | Optional; only if you add RAG over PDFs. Sign up at [pinecone.io](https://www.pinecone.io/), create an index, and set `PINECONE_API_KEY` and `PINECONE_INDEX` in `.env`. |
 | **ElevenLabs** | No | Voice (Live Connect) | Optional. Get an API key at [ElevenLabs](https://elevenlabs.io/app/settings/api-keys). Set `ELEVENLABS_API_KEY` in `.env`. See [Voice (Live Connect)](#voice-live-connect) below. |
 | **Supabase** | No | CRUD (news, piano applications, etc.) | Optional. Create a project at [supabase.com](https://supabase.com), then set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` in `.env`. Table configs live in `data/tables/*.json`. See [Supabase CRUD](#supabase-crud) below. |
+| **Gmail / IMAP** | No | Email check (forwarded PDF → create program) | Optional. For Gmail: enable 2-Step Verification, then create an [App Password](https://support.google.com/accounts/answer/185833). Set `GMAIL_EMAIL` and `GMAIL_APP_PASSWORD` in `.env`. See [Email check](#email-check-forwarded-pdf--create-program) below. |
 
 **Minimum to run:** Python 3.9+ and a valid **OpenAI API key**. Redis, Pinecone, ElevenLabs, and Supabase are optional.
 
@@ -26,7 +27,7 @@ Set these up before running the project so your team can run it from scratch.
 │   ├── main.py              # FastAPI server, routes (/chat, /voice, /workspace, etc.)
 │   ├── agent.py             # Orchestrator: LLM + tools (LangGraph ReAct agent, workspace‑driven config)
 │   ├── agents/              # Personas (receptionist, SME expert)
-│   ├── tools/               # Skills: search_faq, booking, calculator, datetime, reference, Supabase query builder/processor
+│   ├── tools/               # Skills: search_faq, booking, calculator, datetime, reference, Supabase CRUD, email check (IMAP + PDF)
 │   ├── workspace_config.py  # Read/write workspace config (prompt_key, per-agent overrides, enabled tools, welcome)
 │   ├── supabase_client.py   # Supabase client for CRUD (optional; requires SUPABASE_* in .env)
 │   ├── tables_config.py    # Loads data/tables/*.json for LLM and query builder
@@ -47,6 +48,7 @@ Set these up before running the project so your team can run it from scratch.
 │   └── workspace.html       # Workspace to edit prompt, tools, welcome message
 ├── tests/
 ├── .env                     # Secrets (copy from .env.example)
+├── Procfile                 # Railway / Heroku: web process (uvicorn)
 ├── requirements.txt
 └── README.md
 ```
@@ -96,6 +98,10 @@ Ensure you have the [prerequisites](#prerequisites-platforms--accounts) (Python 
 - **list_supabase_tables** — Lists Supabase tables and their lookup/editable fields (from `data/tables/*.json`). Use before building a query when the user asks to add, update, or look up records.
 - **build_supabase_query** — Builds a query spec (find/update/create) for a table using filters, updates, or insert payload. Pass the returned JSON to **execute_supabase_query**.
 - **execute_supabase_query** — Runs the query spec against Supabase. Accepts a spec with `table_key` (and optionally `table`); if `table` is omitted, the processor resolves the Supabase table name from `data/tables/{table_key}.json`. Returns result rows or an error.
+- **search_emails_tool** — Search the configured inbox by subject and/or sender (e.g. when the user says they forwarded a PDF). Returns email id, subject, from, date.
+- **get_email_content_tool** — Get full email content by id: body, attachment filenames, and links (including Google Docs).
+- **parse_email_attachment_tool** — Extract text from a PDF attachment (email id + filename).
+- **get_google_doc_text_tool** — Try to get plain text from a Google Docs URL (e.g. from an email); if export fails, returns the URL for the agent to ask the user for details.
 
 Which tools are enabled, and which **base prompt** (Demo vs Supabase receptionist) is used, is controlled from the **Workspace** page (`/workspace`), via `data/workspace_config.json`.
 
@@ -112,6 +118,35 @@ Which tools are enabled, and which **base prompt** (Demo vs Supabase receptionis
 ```bash
 pytest tests/ -v
 ```
+
+## Deploying to Railway
+
+You can run the app as a persistent web service on [Railway](https://railway.app) so it’s reachable online (e.g. for demos or connecting a frontend).
+
+1. **Push your repo to GitHub** (this repo, with `main` or your default branch).
+
+2. **Create a Railway project**
+   - Go to [railway.app](https://railway.app) → **New Project** → **Deploy from GitHub**.
+   - Select this repository and add it as a **Web Service**.
+
+3. **Configure build and start**
+   - **Build command:** `pip install -r requirements.txt`
+   - **Start command:** use either:
+     - `uvicorn app.main:app --host 0.0.0.0 --port $PORT`  
+     - or `python -m app.main` (the repo includes a **Procfile** that runs the uvicorn command above; Railway will use it if you don’t set a custom start command).
+   - Railway sets `PORT` automatically; the app already reads `PORT` and binds to `0.0.0.0`.
+
+4. **Set environment variables**
+   - In Railway → your service → **Variables**, add the same variables you use in `.env` (see [.env.example](.env.example)).
+   - **Minimum:** `OPENAI_API_KEY`.
+   - Optional: `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `ELEVENLABS_API_KEY`, `GMAIL_EMAIL`, `GMAIL_APP_PASSWORD`, etc.
+
+5. **Deploy**
+   - Railway builds and runs the app, then assigns a public URL (e.g. `https://your-service.up.railway.app`).
+   - **Health check:** `GET /health` should return `{"status": "ok"}`.
+   - **Chat UI:** open the root URL in a browser; use `/voice` for the voice assistant and `/workspace` to edit the agent.
+
+Workspace config and prompt overrides are stored under `data/` in the container; they persist until the next deploy. For production, consider tightening CORS in `app/main.py` to your Railway (or custom) domain.
 
 ## Seeding Upstash (optional)
 
@@ -164,6 +199,12 @@ When **Supabase receptionist** is selected in the workspace, the agent can look 
 The agent uses **list_supabase_tables** to see available tables and fields, **build_supabase_query** to build a find/update/create spec, and **execute_supabase_query** to run it. To add another table, add a new `data/tables/<key>.json` file following the same shape; the loader in `app/tables_config.py` picks it up automatically.
 
 **Required:** `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` (or `SUPABASE_ANON_KEY`) in `.env`. Use the service role key for server-side CRUD if your policy allows.
+
+### Email check (forwarded PDF / create program)
+
+When a caller says they will forward or have forwarded a PDF or email (e.g. "I've forwarded the details"), the agent can find that email, parse the body and PDF attachments or Google Doc links, and create a program (piano_activation) in Supabase from the content. The agent will ask for the email subject if the user did not provide it, then use **search_emails_tool** → **get_email_content_tool** → **parse_email_attachment_tool** (for PDFs) and/or **get_google_doc_text_tool** (for Doc links), then **build_supabase_query** + **execute_supabase_query** to create the record.
+
+**Optional:** Set `GMAIL_EMAIL` and `GMAIL_APP_PASSWORD` in `.env` (use a [Gmail App Password](https://support.google.com/accounts/answer/185833) with 2-Step Verification). Or use `IMAP_HOST`, `IMAP_USER`, `IMAP_PASSWORD` for another provider. If not set, the agent will tell the user that email check is not configured.
 
 ## Stateful AI Memory (Redis)
 

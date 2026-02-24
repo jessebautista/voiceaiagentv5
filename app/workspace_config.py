@@ -23,6 +23,10 @@ ALL_TOOL_NAMES = [
     "list_supabase_tables",
     "build_supabase_query",
     "execute_supabase_query",
+    "search_emails_tool",
+    "get_email_content_tool",
+    "parse_email_attachment_tool",
+    "get_google_doc_text_tool",
 ]
 
 
