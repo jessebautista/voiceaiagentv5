@@ -18,6 +18,7 @@ from app.tools.reference_json import get_reference_info
 from app.tools.query_builder import build_supabase_query, list_supabase_tables
 from app.tools.query_processor import execute_supabase_query
 from app.tools.web_fetcher import fetch_web_page
+from app.tools.emails import send_invitation, start_agreement
 
 # Name -> tool for workspace enable/disable
 TOOLS_BY_NAME = {
@@ -31,6 +32,8 @@ TOOLS_BY_NAME = {
     "build_supabase_query": build_supabase_query,
     "execute_supabase_query": execute_supabase_query,
     "fetch_web_page": fetch_web_page,
+    "send_invitation": send_invitation,
+    "start_agreement": start_agreement,
 }
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"

@@ -32,3 +32,9 @@ supabase>=2.0.0
 # Tests
 pytest>=8.0.0
 pytest-asyncio>=0.24.0
+
+# Temporal (Workflow engine)
+temporalio>=1.5.0
+
+# Email API (Resend)
+resend>=2.1.0

@@ -10,6 +10,7 @@ from app.tools.reference_json import get_reference_info
 from app.tools.query_builder import build_supabase_query, list_supabase_tables
 from app.tools.query_processor import execute_supabase_query
 from app.tools.web_fetcher import fetch_web_page
+from app.tools.emails import send_invitation, start_agreement
 
 __all__ = [
     "search_faq",

@@ -24,6 +24,8 @@ ALL_TOOL_NAMES = [
     "build_supabase_query",
     "execute_supabase_query",
     "fetch_web_page",
+    "send_invitation",
+    "start_agreement",
 ]
 
 

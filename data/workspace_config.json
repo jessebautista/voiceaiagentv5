@@ -10,7 +10,9 @@
     "list_supabase_tables",
     "build_supabase_query",
     "execute_supabase_query",
-    "fetch_web_page"
+    "fetch_web_page",
+    "send_invitation",
+    "start_agreement"
   ],
   "welcome_message": "Thank you for calling Sing for Hope! I'm Jennifer, how can I help you?"
 }

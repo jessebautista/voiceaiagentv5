@@ -32,19 +32,17 @@ from typing import Optional
 
 from app.agent import get_agent_response, get_agent_response_with_trace
 from app import voice_elevenlabs as voice
-
-
-class ChatRequest(BaseModel):
-    """Request body for /chat."""
-    session_id: str
-    message: str
-    include_observability: bool = False  # when True, response includes trace (input, llm, tool calls, etc.)
+from app.temporal_client import init_temporal_client, get_temporal_client
 
 app = FastAPI(
     title="AI Agent Service",
     description="Receptionist-style AI agent with FAQ search, booking, and calculator tools.",
     version="1.0.0",
 )
+
+@app.on_event("startup")
+async def startup_event():
+    await init_temporal_client()
 
 # Allow the web interface to call the API from any origin (adjust in production)
 app.add_middleware(
@@ -60,6 +58,12 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+
+class ChatRequest(BaseModel):
+    """Request body for /chat."""
+    session_id: str
+    message: str
+    include_observability: bool = False  # when True, response includes trace (input, llm, tool calls, etc.)
 
 @app.get("/")
 async def root():
@@ -260,6 +264,86 @@ async def voice_stt(file: UploadFile = File(...)):
     if text is None:
         raise HTTPException(status_code=503, detail="ElevenLabs STT failed or not configured.")
     return {"text": text}
+
+
+# ----- Temporal API Routes -----
+
+class EmailRequest(BaseModel):
+    email: str
+
+@app.post("/api/invitations")
+async def start_invitation(body: EmailRequest):
+    """Start an invitation workflow for an email address."""
+    client = get_temporal_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Temporal client is not connected.")
+    
+    from app.workflows.invitation import InvitationWorkflow
+    try:
+        handle = await client.start_workflow(
+            InvitationWorkflow.run,
+            body.email,
+            id=f"invitation-workflow-{body.email}",
+            task_queue="voiceai-email-queue",
+        )
+        return {"status": "started", "workflow_id": handle.id}
+    except Exception as e:
+        logger.error(f"Failed to start workflow: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/invitations/accept")
+async def accept_invitation(body: EmailRequest):
+    """Signal the running workflow that the user has accepted."""
+    client = get_temporal_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Temporal client is not connected.")
+    
+    from app.workflows.invitation import InvitationWorkflow
+    workflow_id = f"invitation-workflow-{body.email}"
+    try:
+        handle = client.get_workflow_handle(workflow_id)
+        await handle.signal(InvitationWorkflow.user_responded)
+        return {"status": "signaled", "message": f"Signaled workflow {workflow_id} as accepted."}
+    except Exception as e:
+        logger.error(f"Failed to signal workflow {workflow_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to signal workflow. Is it running?")
+
+@app.post("/api/agreements")
+async def start_agreement(body: EmailRequest):
+    """Start the 'Agreed' reminder workflow for an email address."""
+    client = get_temporal_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Temporal client is not connected.")
+    
+    from app.workflows.agreed import AgreedWorkflow
+    try:
+        handle = await client.start_workflow(
+            AgreedWorkflow.run,
+            body.email,
+            id=f"agreed-workflow-{body.email}",
+            task_queue="voiceai-email-queue",
+        )
+        return {"status": "started", "workflow_id": handle.id}
+    except Exception as e:
+        logger.error(f"Failed to start workflow: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/agreements/adjudicate")
+async def complete_adjudication(body: EmailRequest):
+    """Signal the running 'Agreed' workflow that adjudication is complete."""
+    client = get_temporal_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Temporal client is not connected.")
+    
+    from app.workflows.agreed import AgreedWorkflow
+    workflow_id = f"agreed-workflow-{body.email}"
+    try:
+        handle = client.get_workflow_handle(workflow_id)
+        await handle.signal(AgreedWorkflow.adjudication_completed)
+        return {"status": "signaled", "message": f"Signaled workflow {workflow_id} adjudication complete."}
+    except Exception as e:
+        logger.error(f"Failed to signal workflow {workflow_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to signal workflow. Is it running?")
 
 
 if __name__ == "__main__":
