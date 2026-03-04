@@ -12,9 +12,10 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from dotenv import load_dotenv
 load_dotenv()
 
-# Import our workflows and activities
 from app.workflows.invitation import InvitationWorkflow
 from app.workflows.agreed import AgreedWorkflow
+from app.workflows.dev_fix import DevFixWorkflow
+
 from app.activities.email_activities import (
     send_invitation_email,
     send_follow_up_email,
@@ -24,6 +25,13 @@ from app.activities.email_activities import (
     send_reminder_to_adjudicate,
     send_end_of_adjudication,
     send_thank_you_message,
+)
+from app.activities.dev_activities import (
+    setup_repository,
+    analyze_and_code,
+    verify_fix,
+    create_pull_request,
+    update_bug_ticket,
 )
 
 async def main():
@@ -37,7 +45,7 @@ async def main():
     worker = Worker(
         client,
         task_queue="voiceai-email-queue",
-        workflows=[InvitationWorkflow, AgreedWorkflow],
+        workflows=[InvitationWorkflow, AgreedWorkflow, DevFixWorkflow],
         activities=[
             send_invitation_email,
             send_follow_up_email,
@@ -47,6 +55,11 @@ async def main():
             send_reminder_to_adjudicate,
             send_end_of_adjudication,
             send_thank_you_message,
+            setup_repository,
+            analyze_and_code,
+            verify_fix,
+            create_pull_request,
+            update_bug_ticket,
         ],
     )
 

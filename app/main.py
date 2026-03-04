@@ -65,6 +65,14 @@ class ChatRequest(BaseModel):
     message: str
     include_observability: bool = False  # when True, response includes trace (input, llm, tool calls, etc.)
 
+class BugFixRequest(BaseModel):
+    """Request body for /api/dev/fix."""
+    id: int
+    title: str
+    description: str
+    category: str
+    status: str
+
 @app.get("/")
 async def root():
     """Serve the chat web interface at the root."""
@@ -270,6 +278,31 @@ async def voice_stt(file: UploadFile = File(...)):
 
 class EmailRequest(BaseModel):
     email: str
+
+@app.post("/api/dev/fix")
+async def start_dev_fix(body: BugFixRequest):
+    """Start the Development Agent workflow for a bug fix."""
+    client = get_temporal_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Temporal client is not connected.")
+    
+    import time
+    from app.workflows.dev_fix import DevFixWorkflow
+    try:
+        # Add timestamp to workflow ID so each click creates a new unique run
+        workflow_id = f"dev-fix-workflow-{body.id}-{int(time.time())}"
+        handle = await client.start_workflow(
+            DevFixWorkflow.run,
+            body.dict(),
+            id=workflow_id,
+            task_queue="voiceai-email-queue",
+        )
+        logger.info(f"Started dev fix workflow: {workflow_id}")
+        return {"status": "started", "workflow_id": handle.id}
+    except Exception as e:
+        logger.error(f"Failed to start dev fix workflow: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/invitations")
 async def start_invitation(body: EmailRequest):
