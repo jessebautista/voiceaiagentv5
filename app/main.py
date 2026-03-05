@@ -295,7 +295,7 @@ async def start_dev_fix(body: BugFixRequest):
             DevFixWorkflow.run,
             body.dict(),
             id=workflow_id,
-            task_queue="voiceai-email-queue",
+            task_queue="voiceai-email-queue-v3",
         )
         logger.info(f"Started dev fix workflow: {workflow_id}")
         return {"status": "started", "workflow_id": handle.id}

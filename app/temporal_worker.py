@@ -44,7 +44,7 @@ async def main():
 
     worker = Worker(
         client,
-        task_queue="voiceai-email-queue",
+        task_queue="voiceai-email-queue-v3",
         workflows=[InvitationWorkflow, AgreedWorkflow, DevFixWorkflow],
         activities=[
             send_invitation_email,
@@ -63,7 +63,7 @@ async def main():
         ],
     )
 
-    print("Worker started. Listening on task queue: 'voiceai-email-queue'")
+    print(f"Worker started. Listening on task queue: 'voiceai-email-queue-v3'")
     print("Press Ctrl+C to exit.")
     await worker.run()
 

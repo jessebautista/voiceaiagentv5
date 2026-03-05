@@ -11,9 +11,12 @@ logger = logging.getLogger(__name__)
 # Basic tools for the Agent to interact with the cloned repository
 # NOTE: All tools use Python-native operations, not shell commands, for Windows compatibility.
 
+import time
+
 @tool
 def list_directory(path: str) -> str:
     """Lists all files and directories recursively in the given path."""
+    time.sleep(2)  # Rate limit protection
     try:
         result = []
         for root, dirs, files in os.walk(path):
@@ -32,15 +35,20 @@ def list_directory(path: str) -> str:
 @tool
 def read_file(filepath: str) -> str:
     """Reads the contents of a file at the given absolute filepath."""
+    time.sleep(2)  # Rate limit protection
     try:
         with open(filepath, "r", encoding="utf-8") as f:
-            return f.read()
+            content = f.read()
+            if len(content) > 10000:
+                return content[:10000] + "\n\n...[FILE CONTENT TRUNCATED DUE TO LENGTH - DO NOT READ COMPILED/MINIFIED/LOCK FILES]"
+            return content
     except Exception as e:
         return f"Error reading file {filepath}: {e}"
 
 @tool
 def write_file(filepath: str, content: str) -> str:
     """Writes the given content to a file at the given absolute filepath, overwriting it completely."""
+    time.sleep(2)  # Rate limit protection
     try:
         # Ensure parent directories exist
         Path(filepath).parent.mkdir(parents=True, exist_ok=True)
@@ -53,11 +61,14 @@ def write_file(filepath: str, content: str) -> str:
 @tool
 def search_in_files(query: str, directory: str) -> str:
     """Searches for a specific string inside all files in the given directory and returns matching lines."""
+    time.sleep(2)  # Rate limit protection
     try:
         matches = []
         for root, dirs, files in os.walk(directory):
             dirs[:] = [d for d in dirs if not d.startswith('.') and d != 'node_modules' and d != '.svelte-kit']
             for filename in files:
+                if filename == 'package-lock.json' or filename.endswith('.svg') or filename.endswith('.png'):
+                    continue
                 filepath = os.path.join(root, filename)
                 try:
                     with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
@@ -79,7 +90,8 @@ async def run_dev_agent(repo_path: str, instruction: str) -> str:
     """
     logger.info(f"Running DevAgent on {repo_path} with instruction: {instruction}")
     
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    # Back to gpt-4o-mini which is faster/cheaper, with built-in retries
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_retries=10)
     tools = [list_directory, read_file, write_file, search_in_files]
     
     system_prompt = f"""You are an expert AI software engineer working on a SvelteKit application called PHWB.
@@ -95,13 +107,21 @@ IMPORTANT RULES:
 - After making changes, confirm what you changed and why.
 """
 
+    # We need to manually trim messages if the agent runs too long
+    def trim_messages(msgs):
+        if len(msgs) > 12:
+            return [msgs[0]] + msgs[-10:]
+        return msgs
+
     agent = create_react_agent(llm, tools, prompt=system_prompt)
     
     try:
         messages = [HumanMessage(content=instruction)]
+        
+        # We rely on gpt-4o and the time.sleep(2) calls inside tools to prevent RateLimit
+        # We also pass the full messages list without astream to avoid Temporal async CancelledErrors
         response = await agent.ainvoke({"messages": messages})
         
-        # The output of langgraph `create_react_agent` includes all messages in the "messages" key.
         # The final answer is the content of the last AI message.
         final_message = response["messages"][-1].content
         return final_message

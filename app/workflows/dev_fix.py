@@ -52,7 +52,8 @@ class DevFixWorkflow:
                 await workflow.execute_activity(
                     analyze_and_code,
                     {"repo_path": repo_path, "bug_data": input_data, "last_error": last_error},
-                    start_to_close_timeout=timedelta(minutes=10),
+                    start_to_close_timeout=timedelta(minutes=30),
+                    heartbeat_timeout=timedelta(minutes=5),
                 )
                 
                 # 3. Verify Fix (Test commands)
@@ -72,11 +73,14 @@ class DevFixWorkflow:
             if not fix_successful:
                 raise Exception(f"Failed to verify fix after {max_attempts} attempts. Last error: {last_error}")
 
+            from temporalio.common import RetryPolicy
+            
             # 4. Create Pull Request
             pr_url = await workflow.execute_activity(
                 create_pull_request,
                 {"repo_path": repo_path, "branch_name": branch_name, "bug_data": input_data},
                 start_to_close_timeout=timedelta(minutes=2),
+                retry_policy=RetryPolicy(non_retryable_error_types=["ValueError"])
             )
             
             # 5. Update Bug Ticket in Supabase

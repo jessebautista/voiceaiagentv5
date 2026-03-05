@@ -32,11 +32,14 @@ async def main():
     handle = await client.start_workflow(
         DevFixWorkflow.run,
         request,
-        id=f"dev-fix-workflow-1-test-v5",
-        task_queue="voiceai-email-queue",
+        id=f"dev-fix-workflow-1-test-v27",
+        task_queue="voiceai-email-queue-v3",
     )
     print(f"Workflow started: {handle.id}")
-    print("Check your temporal worker terminal for logs!")
+    print("Waiting for workflow to complete (this may take a few minutes)...")
+    result = await handle.result()
+    print(f"\nWorkflow finished successfully!")
+    print(f"PR Link: {result}")
     
 if __name__ == "__main__":
     asyncio.run(main())
