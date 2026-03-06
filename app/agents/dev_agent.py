@@ -4,19 +4,25 @@ from pathlib import Path
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
+from langchain_core.rate_limiters import InMemoryRateLimiter
 from langgraph.prebuilt import create_react_agent
 
 logger = logging.getLogger(__name__)
 
+# Rate limiter: max 2 requests/sec, with a 100k token/min budget.
+# This replaces the brittle time.sleep(2) calls that were in every tool.
+rate_limiter = InMemoryRateLimiter(
+    requests_per_second=0.4,   # 1 request every 2.5 seconds
+    check_every_n_seconds=0.1,
+    max_bucket_size=5,
+)
+
 # Basic tools for the Agent to interact with the cloned repository
 # NOTE: All tools use Python-native operations, not shell commands, for Windows compatibility.
-
-import time
 
 @tool
 def list_directory(path: str) -> str:
     """Lists all files and directories recursively in the given path."""
-    time.sleep(2)  # Rate limit protection
     try:
         result = []
         for root, dirs, files in os.walk(path):
@@ -35,7 +41,6 @@ def list_directory(path: str) -> str:
 @tool
 def read_file(filepath: str) -> str:
     """Reads the contents of a file at the given absolute filepath."""
-    time.sleep(2)  # Rate limit protection
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             content = f.read()
@@ -48,7 +53,6 @@ def read_file(filepath: str) -> str:
 @tool
 def write_file(filepath: str, content: str) -> str:
     """Writes the given content to a file at the given absolute filepath, overwriting it completely."""
-    time.sleep(2)  # Rate limit protection
     try:
         # Ensure parent directories exist
         Path(filepath).parent.mkdir(parents=True, exist_ok=True)
@@ -61,7 +65,6 @@ def write_file(filepath: str, content: str) -> str:
 @tool
 def search_in_files(query: str, directory: str) -> str:
     """Searches for a specific string inside all files in the given directory and returns matching lines."""
-    time.sleep(2)  # Rate limit protection
     try:
         matches = []
         for root, dirs, files in os.walk(directory):
@@ -87,11 +90,17 @@ def search_in_files(query: str, directory: str) -> str:
 async def run_dev_agent(repo_path: str, instruction: str) -> str:
     """
     Initializes a LangGraph ReAct agent with tools to read/write files and executes the given instruction.
+    Rate limiting is handled by the InMemoryRateLimiter attached to the LLM — no more time.sleep() in tools.
     """
     logger.info(f"Running DevAgent on {repo_path} with instruction: {instruction}")
     
-    # Back to gpt-4o-mini which is faster/cheaper, with built-in retries
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_retries=10)
+    # gpt-4o with the rate limiter — much larger context window and smarter reasoning than gpt-4o-mini
+    llm = ChatOpenAI(
+        model="gpt-4o",
+        temperature=0,
+        max_retries=5,
+        rate_limiter=rate_limiter,
+    )
     tools = [list_directory, read_file, write_file, search_in_files]
     
     system_prompt = f"""You are an expert AI software engineer working on a SvelteKit application called PHWB.
@@ -107,7 +116,7 @@ IMPORTANT RULES:
 - After making changes, confirm what you changed and why.
 """
 
-    # We need to manually trim messages if the agent runs too long
+    # Trim old messages if the agent runs many tool loops (prevents context window overflow)
     def trim_messages(msgs):
         if len(msgs) > 12:
             return [msgs[0]] + msgs[-10:]
@@ -117,12 +126,8 @@ IMPORTANT RULES:
     
     try:
         messages = [HumanMessage(content=instruction)]
-        
-        # We rely on gpt-4o and the time.sleep(2) calls inside tools to prevent RateLimit
-        # We also pass the full messages list without astream to avoid Temporal async CancelledErrors
         response = await agent.ainvoke({"messages": messages})
         
-        # The final answer is the content of the last AI message.
         final_message = response["messages"][-1].content
         return final_message
     except Exception as e:

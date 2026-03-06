@@ -51,7 +51,7 @@ class DevFixWorkflow:
                 # 2. Analyze & Code (LLM writes code)
                 await workflow.execute_activity(
                     analyze_and_code,
-                    {"repo_path": repo_path, "bug_data": input_data, "last_error": last_error},
+                    {"repo_path": repo_path, "bug_data": input_data.dict(), "last_error": last_error},
                     start_to_close_timeout=timedelta(minutes=30),
                     heartbeat_timeout=timedelta(minutes=5),
                 )
@@ -78,7 +78,7 @@ class DevFixWorkflow:
             # 4. Create Pull Request
             pr_url = await workflow.execute_activity(
                 create_pull_request,
-                {"repo_path": repo_path, "branch_name": branch_name, "bug_data": input_data},
+                {"repo_path": repo_path, "branch_name": branch_name, "bug_data": input_data.dict()},
                 start_to_close_timeout=timedelta(minutes=2),
                 retry_policy=RetryPolicy(non_retryable_error_types=["ValueError"])
             )

@@ -40,6 +40,19 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# Allow the PHWB frontend (and any localhost dev server) to call this API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",   # PHWB vite dev server
+        "http://localhost:4173",   # PHWB vite preview
+        "http://localhost:3000",   # fallback
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 @app.on_event("startup")
 async def startup_event():
     await init_temporal_client()
