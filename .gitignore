@@ -35,3 +35,10 @@ htmlcov/
 # Logs
 *.log
 logs/
+
+
+# Large binaries
+*.exe
+*.tar.gz
+*.zip
+

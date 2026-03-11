@@ -1,0 +1,709 @@
+﻿{
+  "events": [
+    {
+      "eventId": "1",
+      "eventTime": "2026-03-11T03:21:18.857572300Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_STARTED",
+      "taskId": "1048777",
+      "workflowExecutionStartedEventAttributes": {
+        "workflowType": {
+          "name": "DevFixWorkflow"
+        },
+        "taskQueue": {
+          "name": "voiceai-email-queue-v3",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJjYXRlZ29yeSI6IlVJIFVwZGF0ZSIsImRlc2NyaXB0aW9uIjoiSnVzdCBhIHNtYWxsIFVJIHRlc3QuIEluIGBzcmMvcm91dGVzL2J1Z3MvK3BhZ2Uuc3ZlbHRlYCwgY2FuIHlvdSBhZGQgYW4gaW5saW5lIHN0eWxlIGBib3JkZXI6IDJweCBzb2xpZCByZWQ7YCB0byB0aGUgbWFpbiBoMSBoZWFkaW5nIHRhZyB0aGF0IHNheXMgJ0J1Z3MnPyIsImlkIjo1LCJzdGF0dXMiOiJJbiBQcm9ncmVzcyIsInRpdGxlIjoiQWRkIGEgcHJvbWluZW50IHJlZCBib3JkZXIgdG8gdGhlIEJ1Z3MgcGFnZSB0aXRsZSJ9"
+            }
+          ]
+        },
+        "workflowTaskTimeout": "10s",
+        "originalExecutionRunId": "174da0b1-7b62-4ee2-becf-0b197cc17b83",
+        "identity": "18296@BANIK-PC",
+        "firstExecutionRunId": "174da0b1-7b62-4ee2-becf-0b197cc17b83",
+        "attempt": 1,
+        "firstWorkflowTaskBackoff": "0s",
+        "workflowId": "dev-fix-workflow-5-1773199278"
+      }
+    },
+    {
+      "eventId": "2",
+      "eventTime": "2026-03-11T03:21:18.857572300Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "taskId": "1048778",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "voiceai-email-queue-v3",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "3",
+      "eventTime": "2026-03-11T03:21:18.859933300Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "taskId": "1048783",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "2",
+        "identity": "17556@BANIK-PC",
+        "requestId": "e354589a-6066-4d65-9c09-152d943a371a",
+        "historySizeBytes": "587",
+        "workerVersion": {
+          "buildId": "1eef09fffbfc1a3d478233bc45aacd23"
+        }
+      }
+    },
+    {
+      "eventId": "4",
+      "eventTime": "2026-03-11T03:21:18.883482800Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "taskId": "1048787",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "2",
+        "startedEventId": "3",
+        "identity": "17556@BANIK-PC",
+        "workerVersion": {
+          "buildId": "1eef09fffbfc1a3d478233bc45aacd23"
+        },
+        "sdkMetadata": {
+          "coreUsedFlags": [
+            2,
+            3,
+            1
+          ],
+          "sdkName": "temporal-python",
+          "sdkVersion": "1.23.0"
+        },
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "5",
+      "eventTime": "2026-03-11T03:21:18.883482800Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "taskId": "1048788",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "1",
+        "activityType": {
+          "name": "setup_repository"
+        },
+        "taskQueue": {
+          "name": "voiceai-email-queue-v3",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJidWdfaWQiOjUsImNhdGVnb3J5IjoiVUkgVXBkYXRlIiwiZGVzY3JpcHRpb24iOiJKdXN0IGEgc21hbGwgVUkgdGVzdC4gSW4gYHNyYy9yb3V0ZXMvYnVncy8rcGFnZS5zdmVsdGVgLCBjYW4geW91IGFkZCBhbiBpbmxpbmUgc3R5bGUgYGJvcmRlcjogMnB4IHNvbGlkIHJlZDtgIHRvIHRoZSBtYWluIGgxIGhlYWRpbmcgdGFnIHRoYXQgc2F5cyAnQnVncyc/Iiwic3RhdHVzIjoiSW4gUHJvZ3Jlc3MiLCJ0aXRsZSI6IkFkZCBhIHByb21pbmVudCByZWQgYm9yZGVyIHRvIHRoZSBCdWdzIHBhZ2UgdGl0bGUifQ=="
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": "0s",
+        "scheduleToStartTimeout": "0s",
+        "startToCloseTimeout": "300s",
+        "heartbeatTimeout": "0s",
+        "workflowTaskCompletedEventId": "4",
+        "retryPolicy": {
+          "initialInterval": "1s",
+          "backoffCoefficient": 2,
+          "maximumInterval": "100s"
+        },
+        "useWorkflowBuildId": true
+      }
+    },
+    {
+      "eventId": "6",
+      "eventTime": "2026-03-11T03:21:18.886221500Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "taskId": "1048802",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "5",
+        "identity": "17556@BANIK-PC",
+        "requestId": "3516c665-3562-49ba-be14-e0c7804ecde0",
+        "attempt": 1,
+        "workerVersion": {
+          "buildId": "1eef09fffbfc1a3d478233bc45aacd23"
+        }
+      }
+    },
+    {
+      "eventId": "7",
+      "eventTime": "2026-03-11T03:26:00.091530400Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "taskId": "1048803",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "WyJDOlxcVXNlcnNcXEJhbmlrXFxBcHBEYXRhXFxMb2NhbFxcVGVtcFxccGh3Yl9idWdfNV96MjludWcwXyIsImRldi1hZ2VudC9idWctZml4LzUtMTc3MzE5OTU1OSJd"
+            }
+          ]
+        },
+        "scheduledEventId": "5",
+        "startedEventId": "6",
+        "identity": "17556@BANIK-PC"
+      }
+    },
+    {
+      "eventId": "8",
+      "eventTime": "2026-03-11T03:26:00.091530400Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "taskId": "1048804",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "17556@BANIK-PC-e7b5525112a44ba0b72be32ee5715548",
+          "kind": "TASK_QUEUE_KIND_STICKY",
+          "normalName": "voiceai-email-queue-v3"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "9",
+      "eventTime": "2026-03-11T03:26:00.093180Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "taskId": "1048808",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "8",
+        "identity": "17556@BANIK-PC",
+        "requestId": "886845f7-a30b-4dc4-bce1-7cf5d8ae92e5",
+        "historySizeBytes": "1664",
+        "workerVersion": {
+          "buildId": "1eef09fffbfc1a3d478233bc45aacd23"
+        }
+      }
+    },
+    {
+      "eventId": "10",
+      "eventTime": "2026-03-11T03:26:01.922951400Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "taskId": "1048812",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "8",
+        "startedEventId": "9",
+        "identity": "17556@BANIK-PC",
+        "workerVersion": {
+          "buildId": "1eef09fffbfc1a3d478233bc45aacd23"
+        },
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "11",
+      "eventTime": "2026-03-11T03:26:01.922951400Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "taskId": "1048813",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "2",
+        "activityType": {
+          "name": "analyze_and_code"
+        },
+        "taskQueue": {
+          "name": "voiceai-email-queue-v3",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJidWdfZGF0YSI6eyJidWdfaWQiOjUsImNhdGVnb3J5IjoiVUkgVXBkYXRlIiwiZGVzY3JpcHRpb24iOiJKdXN0IGEgc21hbGwgVUkgdGVzdC4gSW4gYHNyYy9yb3V0ZXMvYnVncy8rcGFnZS5zdmVsdGVgLCBjYW4geW91IGFkZCBhbiBpbmxpbmUgc3R5bGUgYGJvcmRlcjogMnB4IHNvbGlkIHJlZDtgIHRvIHRoZSBtYWluIGgxIGhlYWRpbmcgdGFnIHRoYXQgc2F5cyAnQnVncyc/Iiwic3RhdHVzIjoiSW4gUHJvZ3Jlc3MiLCJ0aXRsZSI6IkFkZCBhIHByb21pbmVudCByZWQgYm9yZGVyIHRvIHRoZSBCdWdzIHBhZ2UgdGl0bGUifSwibGFzdF9lcnJvciI6bnVsbCwicmVwb19wYXRoIjoiQzpcXFVzZXJzXFxCYW5pa1xcQXBwRGF0YVxcTG9jYWxcXFRlbXBcXHBod2JfYnVnXzVfejI5bnVnMF8ifQ=="
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": "0s",
+        "scheduleToStartTimeout": "0s",
+        "startToCloseTimeout": "1800s",
+        "heartbeatTimeout": "300s",
+        "workflowTaskCompletedEventId": "10",
+        "retryPolicy": {
+          "initialInterval": "1s",
+          "backoffCoefficient": 2,
+          "maximumInterval": "100s"
+        },
+        "useWorkflowBuildId": true
+      }
+    },
+    {
+      "eventId": "12",
+      "eventTime": "2026-03-11T03:26:01.924602600Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "taskId": "1048818",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "11",
+        "identity": "17556@BANIK-PC",
+        "requestId": "e60daf51-6259-47aa-a36a-87e820306d3b",
+        "attempt": 1,
+        "workerVersion": {
+          "buildId": "1eef09fffbfc1a3d478233bc45aacd23"
+        }
+      }
+    },
+    {
+      "eventId": "13",
+      "eventTime": "2026-03-11T03:27:54.365337800Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "taskId": "1048819",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "YmluYXJ5L251bGw="
+              }
+            }
+          ]
+        },
+        "scheduledEventId": "11",
+        "startedEventId": "12",
+        "identity": "17556@BANIK-PC"
+      }
+    },
+    {
+      "eventId": "14",
+      "eventTime": "2026-03-11T03:27:54.365337800Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "taskId": "1048820",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "17556@BANIK-PC-e7b5525112a44ba0b72be32ee5715548",
+          "kind": "TASK_QUEUE_KIND_STICKY",
+          "normalName": "voiceai-email-queue-v3"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "15",
+      "eventTime": "2026-03-11T03:27:54.366397800Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "taskId": "1048824",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "14",
+        "identity": "17556@BANIK-PC",
+        "requestId": "f0ce32ab-10c7-4388-a96f-919d1fda1df5",
+        "historySizeBytes": "2721",
+        "workerVersion": {
+          "buildId": "1eef09fffbfc1a3d478233bc45aacd23"
+        }
+      }
+    },
+    {
+      "eventId": "16",
+      "eventTime": "2026-03-11T03:27:54.369935Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "taskId": "1048828",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "14",
+        "startedEventId": "15",
+        "identity": "17556@BANIK-PC",
+        "workerVersion": {
+          "buildId": "1eef09fffbfc1a3d478233bc45aacd23"
+        },
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "17",
+      "eventTime": "2026-03-11T03:27:54.369935Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "taskId": "1048829",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "3",
+        "activityType": {
+          "name": "verify_fix"
+        },
+        "taskQueue": {
+          "name": "voiceai-email-queue-v3",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "IkM6XFxVc2Vyc1xcQmFuaWtcXEFwcERhdGFcXExvY2FsXFxUZW1wXFxwaHdiX2J1Z181X3oyOW51ZzBfIg=="
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": "0s",
+        "scheduleToStartTimeout": "0s",
+        "startToCloseTimeout": "300s",
+        "heartbeatTimeout": "0s",
+        "workflowTaskCompletedEventId": "16",
+        "retryPolicy": {
+          "initialInterval": "1s",
+          "backoffCoefficient": 2,
+          "maximumInterval": "100s"
+        },
+        "useWorkflowBuildId": true
+      }
+    },
+    {
+      "eventId": "18",
+      "eventTime": "2026-03-11T03:27:54.371552100Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "taskId": "1048834",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "17",
+        "identity": "17556@BANIK-PC",
+        "requestId": "9ae48e3c-4b3b-4ab0-9a86-e28ed2ced81f",
+        "attempt": 1,
+        "workerVersion": {
+          "buildId": "1eef09fffbfc1a3d478233bc45aacd23"
+        }
+      }
+    },
+    {
+      "eventId": "19",
+      "eventTime": "2026-03-11T03:28:35.927960800Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "taskId": "1048835",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "W3RydWUsbnVsbF0="
+            }
+          ]
+        },
+        "scheduledEventId": "17",
+        "startedEventId": "18",
+        "identity": "17556@BANIK-PC"
+      }
+    },
+    {
+      "eventId": "20",
+      "eventTime": "2026-03-11T03:28:35.927960800Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "taskId": "1048836",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "17556@BANIK-PC-e7b5525112a44ba0b72be32ee5715548",
+          "kind": "TASK_QUEUE_KIND_STICKY",
+          "normalName": "voiceai-email-queue-v3"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "21",
+      "eventTime": "2026-03-11T03:28:35.929610700Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "taskId": "1048840",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "20",
+        "identity": "17556@BANIK-PC",
+        "requestId": "df508fb6-d936-43c4-9ef2-36ac44132b18",
+        "historySizeBytes": "3446",
+        "workerVersion": {
+          "buildId": "1eef09fffbfc1a3d478233bc45aacd23"
+        }
+      }
+    },
+    {
+      "eventId": "22",
+      "eventTime": "2026-03-11T03:28:35.957815600Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "taskId": "1048844",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "20",
+        "startedEventId": "21",
+        "identity": "17556@BANIK-PC",
+        "workerVersion": {
+          "buildId": "1eef09fffbfc1a3d478233bc45aacd23"
+        },
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "23",
+      "eventTime": "2026-03-11T03:28:35.957859200Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "taskId": "1048845",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "4",
+        "activityType": {
+          "name": "create_pull_request"
+        },
+        "taskQueue": {
+          "name": "voiceai-email-queue-v3",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJicmFuY2hfbmFtZSI6ImRldi1hZ2VudC9idWctZml4LzUtMTc3MzE5OTU1OSIsImJ1Z19kYXRhIjp7ImJ1Z19pZCI6NSwiY2F0ZWdvcnkiOiJVSSBVcGRhdGUiLCJkZXNjcmlwdGlvbiI6Ikp1c3QgYSBzbWFsbCBVSSB0ZXN0LiBJbiBgc3JjL3JvdXRlcy9idWdzLytwYWdlLnN2ZWx0ZWAsIGNhbiB5b3UgYWRkIGFuIGlubGluZSBzdHlsZSBgYm9yZGVyOiAycHggc29saWQgcmVkO2AgdG8gdGhlIG1haW4gaDEgaGVhZGluZyB0YWcgdGhhdCBzYXlzICdCdWdzJz8iLCJzdGF0dXMiOiJJbiBQcm9ncmVzcyIsInRpdGxlIjoiQWRkIGEgcHJvbWluZW50IHJlZCBib3JkZXIgdG8gdGhlIEJ1Z3MgcGFnZSB0aXRsZSJ9LCJyZXBvX3BhdGgiOiJDOlxcVXNlcnNcXEJhbmlrXFxBcHBEYXRhXFxMb2NhbFxcVGVtcFxccGh3Yl9idWdfNV96MjludWcwXyJ9"
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": "0s",
+        "scheduleToStartTimeout": "0s",
+        "startToCloseTimeout": "120s",
+        "heartbeatTimeout": "0s",
+        "workflowTaskCompletedEventId": "22",
+        "retryPolicy": {
+          "initialInterval": "1s",
+          "backoffCoefficient": 2,
+          "maximumInterval": "100s",
+          "nonRetryableErrorTypes": [
+            "ValueError"
+          ]
+        },
+        "useWorkflowBuildId": true
+      }
+    },
+    {
+      "eventId": "24",
+      "eventTime": "2026-03-11T03:28:35.959275Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "taskId": "1048850",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "23",
+        "identity": "17556@BANIK-PC",
+        "requestId": "62f693c8-e35b-4d73-9e5c-57f5304fe344",
+        "attempt": 1,
+        "workerVersion": {
+          "buildId": "1eef09fffbfc1a3d478233bc45aacd23"
+        }
+      }
+    },
+    {
+      "eventId": "25",
+      "eventTime": "2026-03-11T03:28:42.214945900Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "taskId": "1048851",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "Imh0dHBzOi8vZ2l0aHViLmNvbS9iYW5pcXVlMTUvcGh3Yi10ZXN0cmVwby9wdWxsLzgi"
+            }
+          ]
+        },
+        "scheduledEventId": "23",
+        "startedEventId": "24",
+        "identity": "17556@BANIK-PC"
+      }
+    },
+    {
+      "eventId": "26",
+      "eventTime": "2026-03-11T03:28:42.214945900Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "taskId": "1048852",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "17556@BANIK-PC-e7b5525112a44ba0b72be32ee5715548",
+          "kind": "TASK_QUEUE_KIND_STICKY",
+          "normalName": "voiceai-email-queue-v3"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "27",
+      "eventTime": "2026-03-11T03:28:42.216559200Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "taskId": "1048856",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "26",
+        "identity": "17556@BANIK-PC",
+        "requestId": "b59629e7-f4ef-4b3a-9b9b-df7a43e1634b",
+        "historySizeBytes": "4594",
+        "workerVersion": {
+          "buildId": "1eef09fffbfc1a3d478233bc45aacd23"
+        }
+      }
+    },
+    {
+      "eventId": "28",
+      "eventTime": "2026-03-11T03:28:42.220269500Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "taskId": "1048860",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "26",
+        "startedEventId": "27",
+        "identity": "17556@BANIK-PC",
+        "workerVersion": {
+          "buildId": "1eef09fffbfc1a3d478233bc45aacd23"
+        },
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "29",
+      "eventTime": "2026-03-11T03:28:42.220269500Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "taskId": "1048861",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "5",
+        "activityType": {
+          "name": "update_bug_ticket"
+        },
+        "taskQueue": {
+          "name": "voiceai-email-queue-v3",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJidWdfaWQiOjUsInByX3VybCI6Imh0dHBzOi8vZ2l0aHViLmNvbS9iYW5pcXVlMTUvcGh3Yi10ZXN0cmVwby9wdWxsLzgifQ=="
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": "0s",
+        "scheduleToStartTimeout": "0s",
+        "startToCloseTimeout": "60s",
+        "heartbeatTimeout": "0s",
+        "workflowTaskCompletedEventId": "28",
+        "retryPolicy": {
+          "initialInterval": "1s",
+          "backoffCoefficient": 2,
+          "maximumInterval": "100s"
+        },
+        "useWorkflowBuildId": true
+      }
+    },
+    {
+      "eventId": "30",
+      "eventTime": "2026-03-11T03:28:42.221894700Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "taskId": "1048866",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "29",
+        "identity": "17556@BANIK-PC",
+        "requestId": "d10f32d1-cfe2-497e-94a7-6fbb0a73e4b9",
+        "attempt": 1,
+        "workerVersion": {
+          "buildId": "1eef09fffbfc1a3d478233bc45aacd23"
+        }
+      }
+    },
+    {
+      "eventId": "31",
+      "eventTime": "2026-03-11T03:28:42.750719600Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "taskId": "1048867",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "YmluYXJ5L251bGw="
+              }
+            }
+          ]
+        },
+        "scheduledEventId": "29",
+        "startedEventId": "30",
+        "identity": "17556@BANIK-PC"
+      }
+    },
+    {
+      "eventId": "32",
+      "eventTime": "2026-03-11T03:28:42.750719600Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "taskId": "1048868",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "17556@BANIK-PC-e7b5525112a44ba0b72be32ee5715548",
+          "kind": "TASK_QUEUE_KIND_STICKY",
+          "normalName": "voiceai-email-queue-v3"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "33",
+      "eventTime": "2026-03-11T03:28:42.752819300Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "taskId": "1048872",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "32",
+        "identity": "17556@BANIK-PC",
+        "requestId": "2665fbcb-ae97-4158-9864-2d65cb7cf8ff",
+        "historySizeBytes": "5321",
+        "workerVersion": {
+          "buildId": "1eef09fffbfc1a3d478233bc45aacd23"
+        }
+      }
+    },
+    {
+      "eventId": "34",
+      "eventTime": "2026-03-11T03:28:42.758702100Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "taskId": "1048876",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "32",
+        "startedEventId": "33",
+        "identity": "17556@BANIK-PC",
+        "workerVersion": {
+          "buildId": "1eef09fffbfc1a3d478233bc45aacd23"
+        },
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "35",
+      "eventTime": "2026-03-11T03:28:42.758718200Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED",
+      "taskId": "1048877",
+      "workflowExecutionCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJwcl91cmwiOiJodHRwczovL2dpdGh1Yi5jb20vYmFuaXF1ZTE1L3Bod2ItdGVzdHJlcG8vcHVsbC84Iiwic3RhdHVzIjoic3VjY2VzcyJ9"
+            }
+          ]
+        },
+        "workflowTaskCompletedEventId": "34"
+      }
+    }
+  ]
+}
