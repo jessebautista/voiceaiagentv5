@@ -40,14 +40,20 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Allow the PHWB frontend (and any localhost dev server) to call this API
+# CORS: configurable for local vs deployed. Set CORS_ORIGINS in production to your PHWB origin(s).
+_cors_origins_raw = os.getenv("CORS_ORIGINS", "").strip()
+if _cors_origins_raw:
+    _cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
+else:
+    # Default: localhost only (local dev). For deployed PHWB, set CORS_ORIGINS to your frontend URL(s).
+    _cors_origins = [
+        "http://localhost:5173",
+        "http://localhost:4173",
+        "http://localhost:3000",
+    ]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",   # PHWB vite dev server
-        "http://localhost:4173",   # PHWB vite preview
-        "http://localhost:3000",   # fallback
-    ],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -56,15 +62,6 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     await init_temporal_client()
-
-# Allow the web interface to call the API from any origin (adjust in production)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Serve static files (web UI) from static/
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -85,6 +82,7 @@ class BugFixRequest(BaseModel):
     description: str
     category: str
     status: str
+    test_mode: bool = False  # If True, skip LLM agent; apply trivial change and run verify → PR (for repo test).
 
 @app.get("/")
 async def root():

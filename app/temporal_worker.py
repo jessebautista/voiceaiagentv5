@@ -1,7 +1,17 @@
 import asyncio
 import sys
 import os
+import warnings
 from pathlib import Path
+
+# Suppress known harmless warnings so we can focus on dev-fix flow and real errors.
+# - Temporal sandbox: "Module X was imported after initial workflow load" (does not affect workflow or code fix).
+warnings.filterwarnings(
+    "ignore",
+    message=".*was imported after initial workflow load.*",
+    module="temporalio.worker.workflow_sandbox._importer",
+)
+
 from temporalio.client import Client
 from temporalio.worker import Worker
 
@@ -29,6 +39,7 @@ from app.activities.email_activities import (
 from app.activities.dev_activities import (
     setup_repository,
     analyze_and_code,
+    apply_trivial_test_change,
     verify_fix,
     create_pull_request,
     update_bug_ticket,
@@ -57,6 +68,7 @@ async def main():
             send_thank_you_message,
             setup_repository,
             analyze_and_code,
+            apply_trivial_test_change,
             verify_fix,
             create_pull_request,
             update_bug_ticket,

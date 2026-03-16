@@ -38,3 +38,14 @@ temporalio>=1.5.0
 
 # Email API (Resend)
 resend>=2.1.0
+
+# Web fetcher tool (fetch_web_page)
+beautifulsoup4>=4.12.0
+httpx>=0.27.0
+
+# Dev agent (analyze_and_code activity)
+anthropic>=0.39.0
+mcp>=1.0.0
+
+# Dev fix (create_pull_request activity — GitHub API)
+PyGithub>=2.0.0

@@ -12,11 +12,12 @@ from mcp.client.stdio import stdio_client, StdioServerParameters
 
 logger = logging.getLogger(__name__)
 
-class AgentState(TypedDict):
+class AgentState(TypedDict, total=False):
     plan: str
     instruction: str
     repo_path: str
     review_feedback: str
+    review_cycle: int
 
 async def run_dev_agent(repo_path: str, instruction: str) -> str:
     """
@@ -55,7 +56,8 @@ async def run_dev_agent(repo_path: str, instruction: str) -> str:
 
             async def call_claude_with_tools(system_prompt: str, user_prompt: str) -> str:
                 messages = [{"role": "user", "content": user_prompt}]
-                
+                tool_round = 0
+
                 while True:
                     response = await client.messages.create(
                         model="claude-sonnet-4-5-20250929",
@@ -64,7 +66,12 @@ async def run_dev_agent(repo_path: str, instruction: str) -> str:
                         messages=messages,
                         tools=anthropic_tools
                     )
-                    
+                    # Log so user sees progress and knows the flow is not stuck
+                    if response.stop_reason == "tool_use":
+                        tool_round += 1
+                        tool_names = [b.name for b in response.content if getattr(b, "type", None) == "tool_use"]
+                        logger.info("Dev agent round %d: calling %s", tool_round, ", ".join(tool_names))
+
                     # Convert response content to primitive dict list
                     assistant_content = []
                     for block in response.content:
@@ -89,7 +96,7 @@ async def run_dev_agent(repo_path: str, instruction: str) -> str:
                                 tool_id = block.id
                                 
                                 try:
-                                    logger.warning(f"Calling tool {tool_name} with args {tool_args}")
+                                    logger.debug("Calling tool %s with args %s", tool_name, tool_args)
                                     
                                     if tool_name == "get_git_diff":
                                         import subprocess
@@ -132,6 +139,7 @@ async def run_dev_agent(repo_path: str, instruction: str) -> str:
                                     })
                         
                         messages.append({"role": "user", "content": tool_results})
+                        logger.info("Dev agent: waiting for Claude response (round %d done)...", tool_round)
                     else:
                         break
                         
@@ -143,7 +151,7 @@ async def run_dev_agent(repo_path: str, instruction: str) -> str:
 
             # --- NODE: PLANNER ---
             async def planner_node(state: AgentState):
-                logger.warning("Planner Node: Gathering context to build a plan.")
+                logger.info("Planner Node: Gathering context to build a plan.")
                 system_prompt = f"""You are a Senior Software Architect working on a codebase at: {state["repo_path"]}
 Your goal is to figure out EXACTLY how to implement the user's request. Do NOT write the final code yourself.
 Use the tools provided to explore the filesystem, read files, and search text. Tools natively allow multiple arguments.
@@ -154,26 +162,29 @@ The plan must list exact absolute filepaths to modify and detailed logic for the
                 user_prompt = f"User Request: {state['instruction']}"
                 plan = await call_claude_with_tools(system_prompt, user_prompt)
                 
-                logger.warning(f"Planner generated plan:\n{plan[:300]}...\n")
+                logger.info("Planner generated plan (first 300 chars): %s...", (plan[:300] or "").strip())
                 return {"plan": plan}
 
             # --- NODE: CODER ---
+            MAX_REVIEW_CYCLES = 2  # cap coder-reviewer loops to avoid runaway
+
             async def coder_node(state: AgentState):
-                logger.warning("Coder Node: Executing the plan.")
+                logger.info("Coder Node: Executing the plan.")
                 system_prompt = f"""You are a Junior Software Developer working on a codebase at: {state["repo_path"]}
-You are given a plan by the Architect, and your job is to execute it EXACTLY as instructed.
-You MUST use the `write_file` tool to make code changes on the disk. NEVER hallucinate making changes.
-Read the file first if you need to, then call `write_file` with the full modified content. Make sure to pass the absolute complete filepath and complete file contents. Do not truncate files.
-When you are completely finished writing the files, just say 'I have completed the code changes.'"""
+You are given a plan by the Architect. Execute it EXACTLY: make real code changes using the `write_file` tool.
+- You MUST use `write_file` to apply changes. Do not just describe changes; write the actual file contents.
+- Read each file with read_file first if needed, then call write_file with the full path and complete file content. Do not truncate.
+- You must make at least one file change that addresses the user's request. When done, say 'I have completed the code changes.'"""
                 
                 user_prompt = f"Architect's Plan:\n{state['plan']}\n\nPrevious Reviewer Feedback:\n{state.get('review_feedback', 'None. This is your first attempt.')}"
                 coder_response = await call_claude_with_tools(system_prompt, user_prompt)
-                logger.warning(f"Coder response: {coder_response[:500]}")
+                logger.info("Coder response (first 500 chars): %s", (coder_response[:500] or "").strip())
                 return {}
 
             # --- NODE: REVIEWER ---
             async def reviewer_node(state: AgentState):
-                logger.warning("Reviewer Node: Inspecting the codebase.")
+                logger.info("Reviewer Node: Inspecting the codebase.")
+                cycle = state.get("review_cycle", 0) + 1
                 system_prompt = f"""You are a Tech Lead Code Reviewer for the codebase at: {state["repo_path"]}
 A junior dev just finished changing code based on this User Request: {state["instruction"]}
 
@@ -186,19 +197,22 @@ If the code is wrong, incomplete, or if NO CHANGES WERE MADE, your FINAL OUTPUT 
                 
                 user_prompt = "Review the current state of the repository. Are the changes APPROVED or REJECTED?"
                 feedback = await call_claude_with_tools(system_prompt, user_prompt)
-                logger.warning(f"Reviewer decision: {feedback[:500]}")
+                logger.info("Reviewer decision (cycle %s): %s", cycle, (feedback[:500] or "").strip())
                 
-                return {"review_feedback": feedback}
+                return {"review_feedback": feedback, "review_cycle": cycle}
 
             # --- ROUTING LOGIC ---
             def reviewer_route(state: AgentState):
                 feedback = state.get("review_feedback", "")
-                if "APPROVED" in feedback.upper():
-                    logger.warning("Reviewer APPROVED the changes. Wrapping up.")
+                cycle = state.get("review_cycle", 0)
+                if cycle >= MAX_REVIEW_CYCLES:
+                    logger.info("Max review cycles reached; proceeding without further retries.")
                     return END
-                else:
-                    logger.warning("Reviewer REJECTED the changes. Sending back to Coder.")
-                    return "coder"
+                if "APPROVED" in feedback.upper():
+                    logger.info("Reviewer APPROVED the changes. Wrapping up.")
+                    return END
+                logger.info("Reviewer REJECTED the changes. Sending back to Coder.")
+                return "coder"
 
             # --- BUILD GRAPH ---
             workflow = StateGraph(AgentState)
@@ -218,7 +232,8 @@ If the code is wrong, incomplete, or if NO CHANGES WERE MADE, your FINAL OUTPUT 
                     "instruction": instruction,
                     "repo_path": repo_path,
                     "plan": "",
-                    "review_feedback": ""
+                    "review_feedback": "",
+                    "review_cycle": 0,
                 })
                 return f"Development completed successfully!\n\nFinal Review Feedback:\n{final_state.get('review_feedback', 'Approved.')}"
             except Exception as e:
