@@ -1,6 +1,7 @@
 from temporalio import activity
 import os
 import re
+import socket
 import tempfile
 import subprocess
 import shutil
@@ -8,6 +9,13 @@ import logging
 import time
 from pydantic import BaseModel
 from typing import Tuple, Dict, Any, Optional, List
+
+# Default preview URL when running E2E (must match vite preview port, e.g. 4173)
+E2E_PREVIEW_URL = "http://localhost:4173"
+E2E_PREVIEW_PORT = 4173
+E2E_WAIT_READY_TIMEOUT = 60
+E2E_BUILD_TIMEOUT = 300
+E2E_PLAYWRIGHT_TIMEOUT = 300
 
 class DevActionInput(BaseModel):
     bug_id: int
@@ -227,8 +235,10 @@ def _run_cmd(
     cwd: str,
     timeout_sec: int = 180,
     capture: bool = True,
+    env: Optional[Dict[str, str]] = None,
 ) -> Tuple[int, str, str]:
     """Run a command; returns (returncode, stdout, stderr). Cross-platform."""
+    run_env = {**os.environ, **(env or {})}
     try:
         r = subprocess.run(
             cmd,
@@ -238,6 +248,7 @@ def _run_cmd(
             encoding="utf-8",
             errors="replace",
             timeout=timeout_sec,
+            env=run_env,
         )
         return (r.returncode, r.stdout or "", r.stderr or "")
     except subprocess.TimeoutExpired:
@@ -252,6 +263,41 @@ def _get_modified_files(repo_path: str) -> List[str]:
     if code != 0:
         return []
     return [line.strip().replace("\\", "/").lstrip("./") for line in (out or "").splitlines() if line.strip()]
+
+
+def _is_ui_path(path: str) -> bool:
+    """True if path is considered a UI file (Svelte, routes, components, app.css, optional static)."""
+    p = path.replace("\\", "/").strip().lstrip("./")
+    if not p:
+        return False
+    if p.endswith(".svelte"):
+        return True
+    if p.startswith("src/routes/"):
+        return True
+    if p.startswith("src/lib/components/"):
+        return True
+    if p == "src/app.css":
+        return True
+    if p.startswith("static/"):
+        return True
+    return False
+
+
+def _is_only_ui_changes(modified_files: List[str]) -> bool:
+    """True iff there is at least one modified file and every one is a UI path."""
+    return len(modified_files) > 0 and all(_is_ui_path(p) for p in modified_files)
+
+
+def _wait_for_preview_ready(port: int = E2E_PREVIEW_PORT, timeout_sec: int = E2E_WAIT_READY_TIMEOUT) -> bool:
+    """Return True when port is accepting connections."""
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=2):
+                return True
+        except (OSError, socket.error):
+            time.sleep(1)
+    return False
 
 
 def _parse_check_error_paths(full_output: str, repo_path: str) -> List[str]:
@@ -340,6 +386,95 @@ async def verify_fix(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
             logging.warning("[verify_fix] %s failed (exit %s). Output: %s", name, code, full[-500:] if full else "(none)")
 
         if check_ok:
+            # Optional E2E: only when DEV_AGENT_RUN_E2E is set and (only UI changes or DEV_AGENT_E2E_ALWAYS).
+            modified = _get_modified_files(repo_path)
+            run_e2e_env = (os.getenv("DEV_AGENT_RUN_E2E") or "").strip().lower() in ("1", "true", "yes")
+            e2e_always = (os.getenv("DEV_AGENT_E2E_ALWAYS") or "").strip().lower() in ("1", "true", "yes")
+            only_ui = _is_only_ui_changes(modified)
+
+            if not run_e2e_env:
+                return True, None
+            if not only_ui and not e2e_always:
+                await log_dev_event(
+                    bug_id, "verify_fix",
+                    "Skipping E2E (changes are not only UI).",
+                    "info", workflow_id,
+                )
+                logging.info("[verify_fix] Skipping E2E (changes are not only UI)")
+                return True, None
+
+            await log_dev_event(
+                bug_id, "verify_fix",
+                "Running E2E (changes are only UI).",
+                "info", workflow_id,
+            )
+            logging.info("[verify_fix] Running E2E (changes are only UI)")
+
+            # Build
+            build_ok = False
+            for build_cmd, name in (
+                (["bun", "run", "build"], "bun run build"),
+                (["npm", "run", "build"], "npm run build"),
+            ):
+                code, out, err = _run_cmd(build_cmd, repo_path, timeout_sec=E2E_BUILD_TIMEOUT)
+                if code == 0:
+                    build_ok = True
+                    break
+                logging.warning("[verify_fix] %s failed: %s", name, (err or out)[-500:])
+            if not build_ok:
+                msg = "E2E build failed (bun run build / npm run build)."
+                await log_dev_event(bug_id, "verify_fix", "❌ " + msg, "error", workflow_id)
+                return False, msg
+
+            # Start preview in background
+            preview_proc = None
+            for preview_cmd in (["bun", "run", "preview"], ["npm", "run", "preview"]):
+                try:
+                    preview_proc = subprocess.Popen(
+                        preview_cmd,
+                        cwd=repo_path,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        env={**os.environ},
+                    )
+                    break
+                except FileNotFoundError:
+                    continue
+            if not preview_proc:
+                await log_dev_event(bug_id, "verify_fix", "❌ Could not start preview (bun/npm not found).", "error", workflow_id)
+                return False, "E2E: could not start preview server."
+
+            try:
+                if not _wait_for_preview_ready(E2E_PREVIEW_PORT, E2E_WAIT_READY_TIMEOUT):
+                    stderr = (preview_proc.stderr and preview_proc.stderr.read()) or b""
+                    await log_dev_event(
+                        bug_id, "verify_fix",
+                        "❌ Preview did not become ready in time.",
+                        "error", workflow_id,
+                    )
+                    return False, "E2E: preview server did not become ready. " + (stderr.decode("utf-8", errors="replace")[-500:] or "")
+
+                code, out, err = _run_cmd(
+                    ["npx", "playwright", "test", "--project=smoke"],
+                    repo_path,
+                    timeout_sec=E2E_PLAYWRIGHT_TIMEOUT,
+                    capture=True,
+                    env={"BASE_URL": E2E_PREVIEW_URL},
+                )
+                combined = (out + "\n" + err).strip()
+                if code != 0:
+                    last_chars = combined[-500:] if combined else "No output"
+                    msg = "E2E failed: " + last_chars
+                    await log_dev_event(bug_id, "verify_fix", "❌ " + msg[:2000], "error", workflow_id)
+                    return False, msg
+            finally:
+                preview_proc.terminate()
+                try:
+                    preview_proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    preview_proc.kill()
+
+            await log_dev_event(bug_id, "verify_fix", "✅ E2E smoke passed.", "success", workflow_id)
             return True, None
 
         # Bypass pre-existing errors: fail only if check reported errors in files modified in this run.

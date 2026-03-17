@@ -63,6 +63,15 @@ The script starts the Temporal dev server (CLI), then the API and worker. Press 
 
 **Optional test mode:** When `test_mode: true` is sent (e.g. from phwb-testrepo’s `npm run test-repo`), the workflow skips the LLM and applies a trivial change, then verify → PR. Use only for validating the pipeline; see “Test repo flow” below.
 
+## Playwright E2E (optional)
+
+When **verify_fix** passes the project check, the harness can optionally run Playwright smoke E2E **only when** the agent’s changes are **only UI** (every modified file is a UI path: `.svelte`, `src/routes/`, `src/lib/components/`, `src/app.css`, or `static/`).
+
+- **`DEV_AGENT_RUN_E2E=1`** (or `true`/`yes`) – Enable conditional E2E. If changes are only UI, the harness runs build → preview → `npx playwright test --project=smoke` and fails verify on E2E failure.
+- **`DEV_AGENT_E2E_ALWAYS=1`** – (Optional) Run E2E even when changes are not only UI (e.g. for full QA runs).
+
+When E2E is enabled but changes are not only UI, the log shows: *“Skipping E2E (changes are not only UI)”* and verify still passes. See `docs/PLAYWRIGHT_UI_ONLY_QA_PLAN.md` in phwb-testrepo for the full flow and decision table.
+
 ## Env and prerequisites
 
 - **.env** in voiceaiagentv5 should have at least:
