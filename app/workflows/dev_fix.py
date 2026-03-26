@@ -12,6 +12,8 @@ from app.activities.dev_activities import (
     DevActionInput
 )
 
+VERIFY_FIX_TIMEOUT_MINUTES = 15
+
 @workflow.defn
 class DevFixWorkflow:
     @workflow.run
@@ -58,7 +60,7 @@ class DevFixWorkflow:
                 success, err_out = await workflow.execute_activity(
                     verify_fix,
                     {"repo_path": repo_path, "bug_id": input_data.bug_id, "workflow_id": workflow_id},
-                    start_to_close_timeout=timedelta(minutes=5),
+                    start_to_close_timeout=timedelta(minutes=VERIFY_FIX_TIMEOUT_MINUTES),
                 )
                 if not success:
                     logging.warning("[DevFix] Test mode: verify failed (e.g. pre-existing errors). Proceeding to PR anyway.")
@@ -89,7 +91,7 @@ class DevFixWorkflow:
                             "bug_id": input_data.bug_id,
                             "workflow_id": workflow_id,
                         },
-                        start_to_close_timeout=timedelta(minutes=5),
+                        start_to_close_timeout=timedelta(minutes=VERIFY_FIX_TIMEOUT_MINUTES),
                     )
                     if success:
                         fix_successful = True

@@ -1,0 +1,38 @@
+You are executing a strict Dev Fix workflow for PHWB.
+
+Follow these rules without exception:
+
+1) Source of truth
+- Treat the repository as the single source of truth.
+- Read `AGENTS.md` or `CLAUDE.md` in the repo root first.
+- Use `docs/` for architecture/flow references before changing code.
+
+2) Issue-first implementation
+- Solve the reported issue directly; identify root cause first.
+- Prefer minimal, safe changes over broad refactors.
+- Do not make unrelated edits.
+
+3) Required code changes
+- You must make at least one concrete code change using available write tools.
+- Do not return a plan-only response.
+- If no change is needed, explain why with evidence from code and checks.
+
+4) Verification requirements
+- The fix must pass project check (`bun run check` or `npm run check`).
+- Never leave syntax, parse, or type errors introduced by your changes.
+- If previous verification output is provided, address it explicitly first.
+
+5) Supabase and schema discipline
+- If code uses a Supabase table/relationship that does not exist, add a migration.
+- Put schema changes in `phwb-testrepo/migrations`.
+- Keep migration changes backward-safe and idempotent when possible.
+
+6) Data/API contract safety
+- Do not break existing route/API contracts unless required by the bug fix.
+- Preserve bug flow behavior: `/api/dev/fix` starts workflow; comments/log paths remain intact.
+
+7) Output/review discipline
+- Keep explanations concise and factual.
+- If reviewer feedback says REJECTED, implement exactly what is requested and re-check.
+- Do not claim success unless code changes are actually applied.
+

@@ -312,6 +312,11 @@ def _parse_check_error_paths(full_output: str, repo_path: str) -> List[str]:
         if not path_raw or path_raw.startswith("("):
             continue
         try:
+            # Normalize common prefixes from Vite/Svelte output, e.g. "File: /abs/path/to/file.svelte"
+            path_raw = re.sub(r"^(?:File|file)\s*:\s*", "", path_raw).strip()
+            path_raw = re.sub(r"^at\s+", "", path_raw).strip()
+            if repo_norm in path_raw:
+                path_raw = path_raw[path_raw.index(repo_norm) :]
             if os.path.isabs(path_raw) and path_raw.startswith(repo_norm):
                 rel = path_raw[len(repo_norm) :].lstrip(os.sep).replace("\\", "/").lstrip("./")
             else:
@@ -321,6 +326,26 @@ def _parse_check_error_paths(full_output: str, repo_path: str) -> List[str]:
         except Exception:
             continue
     return list(seen)
+
+
+def _path_matches_modified(err_path: str, modified_path: str) -> bool:
+    """Flexible path match for relative/absolute and parser variants."""
+    e = err_path.replace("\\", "/").lstrip("./")
+    m = modified_path.replace("\\", "/").lstrip("./")
+    return e == m or e.endswith("/" + m) or m.endswith("/" + e)
+
+
+def _output_mentions_modified_file(full_output: str, modified_files: List[str]) -> bool:
+    """Best-effort guard: if failed output mentions a modified file, don't bypass."""
+    out = full_output.replace("\\", "/")
+    for p in modified_files:
+        rel = p.replace("\\", "/").lstrip("./")
+        base = os.path.basename(rel)
+        if rel and rel in out:
+            return True
+        if base and base in out:
+            return True
+    return False
 
 
 @activity.defn
@@ -487,9 +512,29 @@ async def verify_fix(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         modified = _get_modified_files(repo_path)
         full_output = (last_out + "\n" + last_err).strip()
         error_paths = _parse_check_error_paths(full_output, repo_path)
-        errors_in_modified = [p for p in error_paths if p in modified] if modified else []
+        errors_in_modified = (
+            [p for p in error_paths if any(_path_matches_modified(p, m) for m in modified)]
+            if modified
+            else []
+        )
+        logging.info(
+            "[verify_fix] check failed. modified=%s error_paths=%s errors_in_modified=%s",
+            modified[:20],
+            error_paths[:20],
+            errors_in_modified[:20],
+        )
 
         if modified and error_paths and not errors_in_modified:
+            # Safety guard: don't bypass when output mentions any modified file.
+            if _output_mentions_modified_file(full_output, modified):
+                error_msg = "Project check output references modified files; not bypassing.\n\n" + full_output[:1500]
+                await log_dev_event(
+                    bug_id, "verify_fix",
+                    "❌ Verification failed:\n" + error_msg[:2000],
+                    "error",
+                    workflow_id,
+                )
+                return False, error_msg
             await log_dev_event(
                 bug_id, "verify_fix",
                 "✅ Step 3/5 done. Bypassing: errors only in pre-existing files (none in your changes).",

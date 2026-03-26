@@ -21,6 +21,8 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 # Load environment variables if running standalone
 from dotenv import load_dotenv
 load_dotenv()
+from app.logging_config import configure_logging
+configure_logging(os.getenv("DEV_AGENT_LOG_LEVEL") or os.getenv("LOG_LEVEL") or "INFO")
 
 from app.workflows.invitation import InvitationWorkflow
 from app.workflows.agreed import AgreedWorkflow

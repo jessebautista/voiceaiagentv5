@@ -11,6 +11,18 @@ from mcp.client.session import ClientSession
 from mcp.client.stdio import stdio_client, StdioServerParameters
 
 logger = logging.getLogger(__name__)
+PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+
+
+def _load_dev_fix_rules() -> str:
+    """Load strict dev-fix rules from app/prompts for planner/coder/reviewer prompts."""
+    path = PROMPTS_DIR / "dev_fix_strict_rules.txt"
+    try:
+        if path.exists():
+            return path.read_text(encoding="utf-8").strip()
+    except Exception as e:
+        logger.warning("Failed to load dev-fix rules prompt: %s", e)
+    return ""
 
 class AgentState(TypedDict, total=False):
     plan: str
@@ -53,6 +65,7 @@ async def run_dev_agent(repo_path: str, instruction: str) -> str:
             })
             
             client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+            strict_rules = _load_dev_fix_rules()
 
             async def call_claude_with_tools(system_prompt: str, user_prompt: str) -> str:
                 messages = [{"role": "user", "content": user_prompt}]
@@ -158,6 +171,8 @@ Use the tools provided to explore the filesystem, read files, and search text. T
 Analyze the user's request, gather context, then output a final detailed plan.
 YOUR FINAL RESPONSE MUST BE A DETAILED MARKDOWN PLAN.
 The plan must list exact absolute filepaths to modify and detailed logic for the junior developer."""
+                if strict_rules:
+                    system_prompt += "\n\nStrict Dev Fix Rules:\n" + strict_rules
                 
                 user_prompt = f"User Request: {state['instruction']}"
                 plan = await call_claude_with_tools(system_prompt, user_prompt)
@@ -175,6 +190,8 @@ You are given a plan by the Architect. Execute it EXACTLY: make real code change
 - You MUST use `write_file` to apply changes. Do not just describe changes; write the actual file contents.
 - Read each file with read_file first if needed, then call write_file with the full path and complete file content. Do not truncate.
 - You must make at least one file change that addresses the user's request. When done, say 'I have completed the code changes.'"""
+                if strict_rules:
+                    system_prompt += "\n\nStrict Dev Fix Rules:\n" + strict_rules
                 
                 user_prompt = f"Architect's Plan:\n{state['plan']}\n\nPrevious Reviewer Feedback:\n{state.get('review_feedback', 'None. This is your first attempt.')}"
                 coder_response = await call_claude_with_tools(system_prompt, user_prompt)
@@ -194,6 +211,8 @@ Review their code for logical correctness, bugs, and if they fulfilled the user'
 
 If the code looks perfect and solves the user request, your FINAL OUTPUT MUST explicitly contain the exact word "APPROVED".
 If the code is wrong, incomplete, or if NO CHANGES WERE MADE, your FINAL OUTPUT MUST explicitly contain the exact word "REJECTED" followed by clear feedback for the junior dev to fix it."""
+                if strict_rules:
+                    system_prompt += "\n\nStrict Dev Fix Rules:\n" + strict_rules
                 
                 user_prompt = "Review the current state of the repository. Are the changes APPROVED or REJECTED?"
                 feedback = await call_claude_with_tools(system_prompt, user_prompt)

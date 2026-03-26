@@ -80,7 +80,7 @@ if command -v lsof &>/dev/null && lsof -i :8000 -t &>/dev/null; then
   exit 1
 fi
 echo "Starting FastAPI on port 8000..."
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+PYTHONUNBUFFERED=1 python -u -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --log-level info &
 API_PID=$!
 sleep 2
 if ! kill -0 $API_PID 2>/dev/null; then
@@ -101,6 +101,6 @@ trap cleanup SIGINT SIGTERM
 
 # 3. Worker in foreground (so we see logs)
 echo "Starting Temporal worker (Ctrl+C to stop all)..."
-python app/temporal_worker.py &
+PYTHONUNBUFFERED=1 python -u app/temporal_worker.py &
 WORKER_PID=$!
 wait $WORKER_PID
