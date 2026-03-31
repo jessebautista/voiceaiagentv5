@@ -667,6 +667,68 @@ async def create_pull_request(config: Dict[str, Any]) -> str:
 # Activity: Update Bug Ticket
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _suggest_fix_for_error(error_msg: str) -> str:
+    """
+    Generate a practical suggestion block for common dev-fix failures.
+    This is used when the workflow exhausts retries and posts a final comment.
+    """
+    msg = (error_msg or "").lower()
+
+    if "failed to verify fix after" in msg or "verification failed" in msg:
+        return (
+            "- Review the **last verification output** and fix the first concrete compile/type error.\n"
+            "- Re-run `bun run check` (or `npm run check`) locally and ensure it passes.\n"
+            "- If the error is baseline/unrelated, isolate changed files and confirm no modified file appears in the failing paths."
+        )
+    if "pgrst200" in msg or "could not find a relationship" in msg:
+        return (
+            "- Add/fix the missing foreign-key relationship in Supabase via a migration.\n"
+            "- If the relationship is optional, update the query to avoid implicit relationship expansion.\n"
+            "- Re-run the affected page/API call to confirm schema cache now resolves the relation."
+        )
+    if "406" in msg or "no rows updated" in msg or "not found or update affected no rows" in msg:
+        return (
+            "- Check row existence and RLS/policy visibility for the target record.\n"
+            "- Prefer server-side update route for privileged updates when appropriate.\n"
+            "- Confirm update returns a row in Supabase before treating as success."
+        )
+    if "command not found" in msg or "bun or npm not in path" in msg:
+        return (
+            "- Ensure Node tooling is installed and available in PATH (`bun` or `npm`).\n"
+            "- Verify `package.json` exists in the repository root.\n"
+            "- Retry workflow after dependency tooling is confirmed."
+        )
+    if "dependency install failed" in msg:
+        return (
+            "- Run `bun install` and `npm install` manually to capture exact installer error.\n"
+            "- Resolve lockfile or registry/auth issues, then retry the workflow."
+        )
+    if "e2e build failed" in msg or "e2e failed" in msg or "could not start preview" in msg:
+        return (
+            "- Validate `bun run build`/`npm run build` succeeds locally first.\n"
+            "- Confirm preview starts on expected port and `BASE_URL` is reachable.\n"
+            "- Re-run smoke tests after preview readiness is stable."
+        )
+    if "failed to clone repository" in msg or "git clone" in msg:
+        return (
+            "- Validate `DEV_AGENT_GITHUB_ACCESS_TOKEN` and `DEV_AGENT_GITHUB_REPO_URL`.\n"
+            "- Confirm token permissions include repository read/write.\n"
+            "- Retry after network/auth stability is verified."
+        )
+    if "failed to commit/push" in msg or "create pull request" in msg:
+        return (
+            "- Check git push permissions and branch protection constraints.\n"
+            "- Validate GitHub token scopes for pushing and PR creation.\n"
+            "- Retry once remote access and branch state are confirmed."
+        )
+
+    return (
+        "- Inspect the stack trace/log snippet and identify the first deterministic failure.\n"
+        "- Reproduce locally with the same command/environment to isolate root cause.\n"
+        "- Apply a minimal fix, then rerun verification before retriggering workflow."
+    )
+
+
 @activity.defn
 async def update_bug_ticket(config: Dict[str, Any]) -> None:
     """Updates Supabase bug ticket with the PR link or error."""
@@ -695,12 +757,25 @@ async def update_bug_ticket(config: Dict[str, Any]) -> None:
         logging.info("[update_bug_ticket] Comment + status updated for bug #%s", bug_id)
 
     elif error_msg:
+        suggested_fix = _suggest_fix_for_error(error_msg)
         await log_dev_event(bug_id, "update_bug_ticket", "📝 Posting error to Comments (internal)...", "info", workflow_id)
         supabase.table("phwb_bug_comments").insert({
             "bug_id": bug_id,
             "user_id": None,
-            "content": f"❌ **Dev Agent** encountered an error:\n\n```\n{error_msg}\n```",
+            "content": (
+                "❌ **Dev Agent** could not complete this fix after retry attempts.\n\n"
+                "**Error:**\n"
+                f"```\n{error_msg}\n```\n\n"
+                "**Suggested fix:**\n"
+                f"{suggested_fix}"
+            ),
             "is_internal": True,
         }).execute()
-        await log_dev_event(bug_id, "update_bug_ticket", "❌ Error posted to Comments: " + error_msg[:200], "error", workflow_id)
+        await log_dev_event(
+            bug_id,
+            "update_bug_ticket",
+            "❌ Error + suggested fix posted to Comments: " + error_msg[:200],
+            "error",
+            workflow_id,
+        )
         logging.info("[update_bug_ticket] Error comment posted for bug #%s", bug_id)
