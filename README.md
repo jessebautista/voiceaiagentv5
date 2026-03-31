@@ -77,6 +77,23 @@ Ensure you have the [prerequisites](#prerequisites-platforms--accounts) (Python 
    Visit [http://localhost:8000](http://localhost:8000) to chat.  
    API docs: [http://localhost:8000/docs](http://localhost:8000/docs).
 
+## Dev Fix Run (PHWB Integration)
+
+If you are running the PHWB dev-fix flow end-to-end, use this launcher:
+
+```bash
+cd "/Users/banik/Desktop/Projects2026/voiceaiagentv5"
+./scripts/run_dev_fix.sh
+```
+
+This starts the dev-fix backend stack (API + worker processes used by `/api/dev/fix`).
+
+Quick health check:
+
+```bash
+curl -sS "http://localhost:8000/health"
+```
+
 ## API
 
 - **GET /** — Serves the chat web interface.
