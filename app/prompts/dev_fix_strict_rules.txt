@@ -36,3 +36,17 @@ Follow these rules without exception:
 - If reviewer feedback says REJECTED, implement exactly what is requested and re-check.
 - Do not claim success unless code changes are actually applied.
 
+8) Scope metadata first (for non-dev bug reports)
+- Use provided scope metadata before free-form inference:
+  - `path_hint` (highest priority)
+  - `module_hint`
+  - ticket `labels`
+- If `path_hint` is present, prioritize edits under that route/module path unless impossible.
+- If metadata is missing or ambiguous, infer likely area from title/description and keep changes minimal.
+
+9) UI scope enforcement awareness
+- For UI-category issues (`UI`, `UI/UX`, `Frontend`, `UX`), keep edits in UI paths only:
+  - `src/routes/**`, `src/lib/components/**`, `src/app.css`, `static/**`, and `*.svelte`
+- Avoid backend/store/service edits for UI issues unless strictly required and proven by verification context.
+- Assume verification will reject out-of-scope UI changes; do not modify unrelated modules.
+

@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 
 from app.agent import get_agent_response, get_agent_response_with_trace
 from app import voice_elevenlabs as voice
@@ -82,7 +82,77 @@ class BugFixRequest(BaseModel):
     description: str
     category: str
     status: str
+    module_hint: Optional[str] = None
+    path_hint: Optional[str] = None
+    labels: Optional[List[str]] = None
     test_mode: bool = False  # If True, skip LLM agent; apply trivial change and run verify → PR (for repo test).
+
+
+def _enrich_bug_scope_hints(payload: dict) -> dict:
+    """
+    Best-effort enrichment for non-dev authored bug tickets.
+    Pulls labels and common scope-like fields from Supabase by bug id if missing.
+    Never raises; returns original payload when enrichment is unavailable.
+    """
+    try:
+        from app.supabase_client import get_supabase_client
+        supabase = get_supabase_client("DEV_AGENT")
+        if not supabase:
+            return payload
+
+        bug_id = payload.get("id")
+        if not isinstance(bug_id, int):
+            return payload
+
+        # Fetch bug row as-is, then dynamically inspect likely scope keys.
+        bug_row = None
+        try:
+            bug_res = supabase.from_("phwb_bugs").select("*").eq("id", bug_id).maybe_single().execute()
+            bug_row = getattr(bug_res, "data", None)
+        except Exception:
+            bug_row = None
+
+        if isinstance(bug_row, dict):
+            if not payload.get("module_hint"):
+                for key in ("module", "area", "feature_area", "section", "team"):
+                    val = bug_row.get(key)
+                    if isinstance(val, str) and val.strip():
+                        payload["module_hint"] = val.strip()
+                        break
+            if not payload.get("path_hint"):
+                for key in ("path", "route", "page_path", "source_path", "file_path", "component_path"):
+                    val = bug_row.get(key)
+                    if isinstance(val, str) and val.strip():
+                        payload["path_hint"] = val.strip()
+                        break
+
+        if not payload.get("labels"):
+            label_names: List[str] = []
+            try:
+                la_res = (
+                    supabase.from_("phwb_bug_label_assignments")
+                    .select("label_id")
+                    .eq("bug_id", bug_id)
+                    .execute()
+                )
+                assignments = getattr(la_res, "data", None) or []
+                label_ids = [row.get("label_id") for row in assignments if isinstance(row, dict) and row.get("label_id") is not None]
+                if label_ids:
+                    labels_res = supabase.from_("phwb_bug_labels").select("id,name").in_("id", label_ids).execute()
+                    label_rows = getattr(labels_res, "data", None) or []
+                    label_names = [
+                        row.get("name", "").strip()
+                        for row in label_rows
+                        if isinstance(row, dict) and isinstance(row.get("name"), str) and row.get("name", "").strip()
+                    ]
+            except Exception:
+                label_names = []
+
+            if label_names:
+                payload["labels"] = label_names
+    except Exception:
+        return payload
+    return payload
 
 @app.get("/")
 async def root():
@@ -302,9 +372,10 @@ async def start_dev_fix(body: BugFixRequest):
     try:
         # Add timestamp to workflow ID so each click creates a new unique run
         workflow_id = f"dev-fix-workflow-{body.id}-{int(time.time())}"
+        enriched_bug_payload = _enrich_bug_scope_hints(body.dict())
         handle = await client.start_workflow(
             DevFixWorkflow.run,
-            body.dict(),
+            enriched_bug_payload,
             id=workflow_id,
             task_queue="voiceai-email-queue-v3",
         )

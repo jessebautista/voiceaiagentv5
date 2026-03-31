@@ -23,6 +23,114 @@ class DevActionInput(BaseModel):
     description: str
     category: str
     status: str
+    module_hint: Optional[str] = None
+    path_hint: Optional[str] = None
+    labels: Optional[List[str]] = None
+
+
+_AREA_KEYWORDS: Dict[str, tuple[str, ...]] = {
+    "artists": ("artist", "artists"),
+    "events": ("event", "events", "calendar", "schedule"),
+    "venues": ("venue", "venues", "facility", "facilities"),
+    "partners": ("partner", "partners", "sponsor", "sponsors"),
+    "programs": ("program", "programs"),
+    "payroll": ("payroll", "payment", "payments", "timesheet", "timesheets"),
+    "reports": ("report", "reports", "analytics"),
+    "bugs": ("bug", "bugs", "dev fix", "dev-fix"),
+    "settings": ("setting", "settings", "notification", "notifications"),
+    "production-managers": ("production manager", "production managers"),
+}
+
+_AREA_ROUTE_PREFIXES: Dict[str, str] = {
+    "artists": "src/routes/artists/",
+    "events": "src/routes/events/",
+    "venues": "src/routes/venues/",
+    "partners": "src/routes/partners/",
+    "programs": "src/routes/programs/",
+    "payroll": "src/routes/payroll/",
+    "reports": "src/routes/reports/",
+    "bugs": "src/routes/bugs/",
+    "settings": "src/routes/settings/",
+    "production-managers": "src/routes/settings/production-managers/",
+}
+
+
+def _is_ui_category(category: Optional[str]) -> bool:
+    c = (category or "").strip().lower()
+    return c in ("ui", "ui/ux", "frontend", "ux")
+
+
+def _infer_primary_area(
+    title: Optional[str],
+    description: Optional[str],
+    module_hint: Optional[str] = None,
+    path_hint: Optional[str] = None,
+    labels: Optional[List[str]] = None,
+) -> Optional[str]:
+    path = (path_hint or "").replace("\\", "/").lower()
+    for area, prefix in _AREA_ROUTE_PREFIXES.items():
+        if prefix.lower() in path:
+            return area
+
+    labels_text = " ".join(labels or [])
+    haystack = f"{title or ''} {description or ''} {module_hint or ''} {path_hint or ''} {labels_text}".lower()
+    for area, tokens in _AREA_KEYWORDS.items():
+        if any(token in haystack for token in tokens):
+            return area
+    return None
+
+
+def _expected_ui_prefix(bug_data: DevActionInput) -> Optional[str]:
+    path_hint = (bug_data.path_hint or "").replace("\\", "/").strip().lstrip("./")
+    if path_hint.startswith("src/routes/"):
+        parts = path_hint.split("/")
+        if len(parts) >= 3:
+            return "/".join(parts[:3]) + "/"
+        return "src/routes/"
+
+    area = _infer_primary_area(
+        bug_data.title,
+        bug_data.description,
+        module_hint=bug_data.module_hint,
+        path_hint=bug_data.path_hint,
+        labels=bug_data.labels,
+    )
+    if area:
+        return _AREA_ROUTE_PREFIXES.get(area)
+    return None
+
+
+def _build_scope_hint(bug_data: DevActionInput) -> str:
+    """Create stable, explicit scope guidance for the coding agent."""
+    primary_area = _infer_primary_area(
+        bug_data.title,
+        bug_data.description,
+        module_hint=bug_data.module_hint,
+        path_hint=bug_data.path_hint,
+        labels=bug_data.labels,
+    )
+    expected_prefix = _expected_ui_prefix(bug_data)
+    ui_scoped = _is_ui_category(bug_data.category)
+    lines: List[str] = []
+
+    if ui_scoped:
+        lines.append("- Treat this as a UI-scoped issue.")
+        lines.append("- Restrict edits to UI paths only (`src/routes/**`, `src/lib/components/**`, `src/app.css`, `static/**`, `*.svelte`).")
+        lines.append("- Do not modify backend/service/store files unless verification explicitly proves it is required.")
+    if bug_data.labels:
+        lines.append(f"- Ticket labels: {', '.join(bug_data.labels[:8])}.")
+    if bug_data.module_hint:
+        lines.append(f"- Module hint: `{bug_data.module_hint}`.")
+    if bug_data.path_hint:
+        lines.append(f"- Path hint: `{bug_data.path_hint}`.")
+    if primary_area:
+        lines.append(f"- Primary feature area: `{primary_area}`.")
+    if expected_prefix:
+        lines.append(f"- Prefer files under `{expected_prefix}` for this issue.")
+    if not lines:
+        lines.append("- Keep edits narrowly scoped to files directly related to the reported bug.")
+
+    return "## Scope constraints\n" + "\n".join(lines) + "\n"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -179,6 +287,7 @@ def _build_dev_fix_instruction(repo_path: str, bug_data: DevActionInput, last_er
         f"2. Make at least one concrete code change (use the write_file tool) that fixes or addresses the issue. Prefer a minimal, single-file change when possible.\n"
         f"3. Do not break the project: the change must pass the project's check (e.g. `bun run check` or `npm run check`).\n"
     )
+    task += "\n" + _build_scope_hint(bug_data)
     if last_error:
         task += (
             f"\n## Previous attempt failed verification\n"
@@ -288,6 +397,31 @@ def _is_only_ui_changes(modified_files: List[str]) -> bool:
     return len(modified_files) > 0 and all(_is_ui_path(p) for p in modified_files)
 
 
+def _ui_scope_violations(modified_files: List[str], bug_data: Optional[DevActionInput]) -> List[str]:
+    """Return violations for UI-scoped bugs. Empty list means scope looks valid."""
+    if not bug_data or not _is_ui_category(bug_data.category):
+        return []
+
+    violations: List[str] = []
+    if not modified_files:
+        return ["No files were modified."]
+
+    non_ui = [p for p in modified_files if not _is_ui_path(p)]
+    if non_ui:
+        violations.append("UI-scoped bug modified non-UI paths: " + ", ".join(non_ui[:20]))
+
+    expected_prefix = _expected_ui_prefix(bug_data)
+    if expected_prefix:
+        touches_expected_area = any(p.replace("\\", "/").startswith(expected_prefix) for p in modified_files)
+        if not touches_expected_area:
+            violations.append(
+                "UI-scoped bug did not touch expected area "
+                f"`{expected_prefix}` (changed: {', '.join(modified_files[:20])})."
+            )
+
+    return violations
+
+
 def _wait_for_preview_ready(port: int = E2E_PREVIEW_PORT, timeout_sec: int = E2E_WAIT_READY_TIMEOUT) -> bool:
     """Return True when port is accepting connections."""
     deadline = time.monotonic() + timeout_sec
@@ -353,11 +487,34 @@ async def verify_fix(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     """Runs install (if needed) and project check in the cloned repo. Payload: repo_path, bug_id, workflow_id (optional)."""
     repo_path = payload["repo_path"]
     bug_id = payload["bug_id"]
+    bug_data_raw = payload.get("bug_data")
+    bug_data: Optional[DevActionInput] = None
+    if isinstance(bug_data_raw, dict):
+        try:
+            bug_data = DevActionInput(**bug_data_raw)
+        except Exception:
+            bug_data = None
     workflow_id = payload.get("workflow_id")
     await log_dev_event(bug_id, "verify_fix", "🔍 Step 3/5: Verifying fix (dependencies + project check)...", "info", workflow_id)
     logging.info("[verify_fix] Starting verification in %s", repo_path)
 
     try:
+        modified = _get_modified_files(repo_path)
+        scope_violations = _ui_scope_violations(modified, bug_data)
+        if scope_violations:
+            scope_msg = (
+                "Scope violation detected before verification.\n"
+                + "\n".join(f"- {v}" for v in scope_violations[:20])
+            )
+            await log_dev_event(
+                bug_id,
+                "verify_fix",
+                "❌ " + scope_msg[:2000],
+                "error",
+                workflow_id,
+            )
+            return False, scope_msg
+
         target_node_modules = os.path.join(repo_path, "node_modules")
         # Optional: copy pre-existing node_modules from host (env path, no hardcoded OS path)
         local_node_modules = os.getenv("DEV_AGENT_NODE_MODULES_PATH")
@@ -412,7 +569,6 @@ async def verify_fix(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
 
         if check_ok:
             # Optional E2E: only when DEV_AGENT_RUN_E2E is set and (only UI changes or DEV_AGENT_E2E_ALWAYS).
-            modified = _get_modified_files(repo_path)
             run_e2e_env = (os.getenv("DEV_AGENT_RUN_E2E") or "").strip().lower() in ("1", "true", "yes")
             e2e_always = (os.getenv("DEV_AGENT_E2E_ALWAYS") or "").strip().lower() in ("1", "true", "yes")
             only_ui = _is_only_ui_changes(modified)

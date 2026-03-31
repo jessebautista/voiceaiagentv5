@@ -59,7 +59,12 @@ class DevFixWorkflow:
                 )
                 success, err_out = await workflow.execute_activity(
                     verify_fix,
-                    {"repo_path": repo_path, "bug_id": input_data.bug_id, "workflow_id": workflow_id},
+                    {
+                        "repo_path": repo_path,
+                        "bug_id": input_data.bug_id,
+                        "bug_data": input_data.dict(),
+                        "workflow_id": workflow_id,
+                    },
                     start_to_close_timeout=timedelta(minutes=VERIFY_FIX_TIMEOUT_MINUTES),
                 )
                 if not success:
@@ -89,6 +94,7 @@ class DevFixWorkflow:
                         {
                             "repo_path": repo_path,
                             "bug_id": input_data.bug_id,
+                            "bug_data": input_data.dict(),
                             "workflow_id": workflow_id,
                         },
                         start_to_close_timeout=timedelta(minutes=VERIFY_FIX_TIMEOUT_MINUTES),
