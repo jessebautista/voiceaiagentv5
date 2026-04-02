@@ -4,6 +4,7 @@ import logging
 
 from app.activities.dev_activities import (
     setup_repository,
+    preflight_repository_check,
     analyze_and_code,
     apply_trivial_test_change,
     verify_fix,
@@ -49,6 +50,25 @@ class DevFixWorkflow:
             )
             logging.info(f"[DevFix] Step 1/5 done. Branch: {branch_name}")
 
+            logging.info("[DevFix] Step 1.5/5: Preflight baseline check")
+            preflight = await workflow.execute_activity(
+                preflight_repository_check,
+                {
+                    "repo_path": repo_path,
+                    "bug_id": input_data.bug_id,
+                    "workflow_id": workflow_id,
+                },
+                start_to_close_timeout=timedelta(minutes=4),
+            )
+            baseline_error_paths = preflight.get("baseline_error_paths", []) if isinstance(preflight, dict) else []
+            baseline_ok = bool(preflight.get("baseline_ok", True)) if isinstance(preflight, dict) else True
+            baseline_summary = str(preflight.get("baseline_summary", "") or "") if isinstance(preflight, dict) else ""
+            if not baseline_ok:
+                logging.warning(
+                    "[DevFix] Preflight baseline check found pre-existing check errors; continuing in baseline-aware mode. %s",
+                    baseline_summary[:300],
+                )
+
             test_mode = bug_data.get("test_mode") is True
             if test_mode:
                 logging.info("[DevFix] Test mode: applying trivial change, then verify → PR")
@@ -63,6 +83,7 @@ class DevFixWorkflow:
                         "repo_path": repo_path,
                         "bug_id": input_data.bug_id,
                         "bug_data": input_data.dict(),
+                        "baseline_error_paths": baseline_error_paths,
                         "workflow_id": workflow_id,
                     },
                     start_to_close_timeout=timedelta(minutes=VERIFY_FIX_TIMEOUT_MINUTES),
@@ -95,6 +116,7 @@ class DevFixWorkflow:
                             "repo_path": repo_path,
                             "bug_id": input_data.bug_id,
                             "bug_data": input_data.dict(),
+                            "baseline_error_paths": baseline_error_paths,
                             "workflow_id": workflow_id,
                         },
                         start_to_close_timeout=timedelta(minutes=VERIFY_FIX_TIMEOUT_MINUTES),

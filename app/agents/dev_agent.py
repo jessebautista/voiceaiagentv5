@@ -12,6 +12,7 @@ from mcp.client.stdio import stdio_client, StdioServerParameters
 
 logger = logging.getLogger(__name__)
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+DEFAULT_DEV_MODEL = "claude-sonnet-4-5-20250929"
 
 
 def _load_dev_fix_rules() -> str:
@@ -30,6 +31,24 @@ class AgentState(TypedDict, total=False):
     repo_path: str
     review_feedback: str
     review_cycle: int
+
+
+def _get_env_model(var_name: str, fallback: str) -> str:
+    value = (os.getenv(var_name) or "").strip()
+    return value or fallback
+
+
+def _should_escalate_model(instruction: str, state: AgentState) -> bool:
+    """
+    Escalate for retry-heavy contexts:
+    - workflow retry path (instruction includes previous verification failure)
+    - reviewer/coder loop beyond first cycle
+    """
+    if "Previous attempt failed verification" in instruction:
+        return True
+    if (state.get("review_cycle") or 0) >= 1:
+        return True
+    return False
 
 async def run_dev_agent(repo_path: str, instruction: str) -> str:
     """
@@ -66,14 +85,32 @@ async def run_dev_agent(repo_path: str, instruction: str) -> str:
             
             client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
             strict_rules = _load_dev_fix_rules()
+            default_model = _get_env_model("DEV_AGENT_MODEL_DEFAULT", DEFAULT_DEV_MODEL)
+            planner_model = _get_env_model("DEV_AGENT_MODEL_PLANNER", default_model)
+            escalated_model = _get_env_model("DEV_AGENT_MODEL_ESCALATED", default_model)
+            escalate_on_retry = (os.getenv("DEV_AGENT_MODEL_ESCALATE_ON_RETRY", "1").strip().lower() in ("1", "true", "yes"))
+            logger.info(
+                "Dev agent model routing | planner=%s default=%s escalated=%s escalate_on_retry=%s",
+                planner_model,
+                default_model,
+                escalated_model,
+                escalate_on_retry,
+            )
 
-            async def call_claude_with_tools(system_prompt: str, user_prompt: str) -> str:
+            def choose_model_for_node(node_name: str, state: AgentState) -> str:
+                if node_name == "planner":
+                    return planner_model
+                if node_name in ("coder", "reviewer") and escalate_on_retry and _should_escalate_model(instruction, state):
+                    return escalated_model
+                return default_model
+
+            async def call_claude_with_tools(system_prompt: str, user_prompt: str, model_name: str, node_name: str) -> str:
                 messages = [{"role": "user", "content": user_prompt}]
                 tool_round = 0
 
                 while True:
                     response = await client.messages.create(
-                        model="claude-sonnet-4-5-20250929",
+                        model=model_name,
                         max_tokens=4096,
                         system=system_prompt,
                         messages=messages,
@@ -83,7 +120,13 @@ async def run_dev_agent(repo_path: str, instruction: str) -> str:
                     if response.stop_reason == "tool_use":
                         tool_round += 1
                         tool_names = [b.name for b in response.content if getattr(b, "type", None) == "tool_use"]
-                        logger.info("Dev agent round %d: calling %s", tool_round, ", ".join(tool_names))
+                        logger.info(
+                            "Dev agent %s round %d (%s): calling %s",
+                            node_name,
+                            tool_round,
+                            model_name,
+                            ", ".join(tool_names),
+                        )
 
                     # Convert response content to primitive dict list
                     assistant_content = []
@@ -165,6 +208,7 @@ async def run_dev_agent(repo_path: str, instruction: str) -> str:
             # --- NODE: PLANNER ---
             async def planner_node(state: AgentState):
                 logger.info("Planner Node: Gathering context to build a plan.")
+                model_name = choose_model_for_node("planner", state)
                 system_prompt = f"""You are a Senior Software Architect working on a codebase at: {state["repo_path"]}
 Your goal is to figure out EXACTLY how to implement the user's request. Do NOT write the final code yourself.
 Use the tools provided to explore the filesystem, read files, and search text. Tools natively allow multiple arguments.
@@ -175,7 +219,7 @@ The plan must list exact absolute filepaths to modify and detailed logic for the
                     system_prompt += "\n\nStrict Dev Fix Rules:\n" + strict_rules
                 
                 user_prompt = f"User Request: {state['instruction']}"
-                plan = await call_claude_with_tools(system_prompt, user_prompt)
+                plan = await call_claude_with_tools(system_prompt, user_prompt, model_name, "planner")
                 
                 logger.info("Planner generated plan (first 300 chars): %s...", (plan[:300] or "").strip())
                 return {"plan": plan}
@@ -185,6 +229,7 @@ The plan must list exact absolute filepaths to modify and detailed logic for the
 
             async def coder_node(state: AgentState):
                 logger.info("Coder Node: Executing the plan.")
+                model_name = choose_model_for_node("coder", state)
                 system_prompt = f"""You are a Junior Software Developer working on a codebase at: {state["repo_path"]}
 You are given a plan by the Architect. Execute it EXACTLY: make real code changes using the `write_file` tool.
 - You MUST use `write_file` to apply changes. Do not just describe changes; write the actual file contents.
@@ -194,7 +239,7 @@ You are given a plan by the Architect. Execute it EXACTLY: make real code change
                     system_prompt += "\n\nStrict Dev Fix Rules:\n" + strict_rules
                 
                 user_prompt = f"Architect's Plan:\n{state['plan']}\n\nPrevious Reviewer Feedback:\n{state.get('review_feedback', 'None. This is your first attempt.')}"
-                coder_response = await call_claude_with_tools(system_prompt, user_prompt)
+                coder_response = await call_claude_with_tools(system_prompt, user_prompt, model_name, "coder")
                 logger.info("Coder response (first 500 chars): %s", (coder_response[:500] or "").strip())
                 return {}
 
@@ -202,6 +247,7 @@ You are given a plan by the Architect. Execute it EXACTLY: make real code change
             async def reviewer_node(state: AgentState):
                 logger.info("Reviewer Node: Inspecting the codebase.")
                 cycle = state.get("review_cycle", 0) + 1
+                model_name = choose_model_for_node("reviewer", state)
                 system_prompt = f"""You are a Tech Lead Code Reviewer for the codebase at: {state["repo_path"]}
 A junior dev just finished changing code based on this User Request: {state["instruction"]}
 
@@ -215,7 +261,7 @@ If the code is wrong, incomplete, or if NO CHANGES WERE MADE, your FINAL OUTPUT 
                     system_prompt += "\n\nStrict Dev Fix Rules:\n" + strict_rules
                 
                 user_prompt = "Review the current state of the repository. Are the changes APPROVED or REJECTED?"
-                feedback = await call_claude_with_tools(system_prompt, user_prompt)
+                feedback = await call_claude_with_tools(system_prompt, user_prompt, model_name, "reviewer")
                 logger.info("Reviewer decision (cycle %s): %s", cycle, (feedback[:500] or "").strip())
                 
                 return {"review_feedback": feedback, "review_cycle": cycle}

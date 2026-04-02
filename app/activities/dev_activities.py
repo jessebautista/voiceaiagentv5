@@ -16,6 +16,7 @@ E2E_PREVIEW_PORT = 4173
 E2E_WAIT_READY_TIMEOUT = 60
 E2E_BUILD_TIMEOUT = 300
 E2E_PLAYWRIGHT_TIMEOUT = 300
+PREFLIGHT_CHECK_TIMEOUT = 180
 
 class DevActionInput(BaseModel):
     bug_id: int
@@ -127,6 +128,11 @@ def _build_scope_hint(bug_data: DevActionInput) -> str:
         lines.append(f"- Primary feature area: `{primary_area}`.")
     if expected_prefix:
         lines.append(f"- Prefer files under `{expected_prefix}` for this issue.")
+    if ui_scoped and expected_prefix:
+        lines.append(
+            f"- Allowed edit paths for this ticket: `{expected_prefix}**`, `src/lib/components/**`, `src/app.css`, `static/**`."
+        )
+        lines.append("- Avoid editing other route folders unless explicitly required by the issue.")
     if not lines:
         lines.append("- Keep edits narrowly scoped to files directly related to the reported bug.")
 
@@ -418,6 +424,19 @@ def _ui_scope_violations(modified_files: List[str], bug_data: Optional[DevAction
                 "UI-scoped bug did not touch expected area "
                 f"`{expected_prefix}` (changed: {', '.join(modified_files[:20])})."
             )
+        allowed_prefixes = (expected_prefix, "src/lib/components/", "static/")
+        ui_outside_allowlist = [
+            p
+            for p in modified_files
+            if _is_ui_path(p)
+            and p.replace("\\", "/") != "src/app.css"
+            and not p.replace("\\", "/").startswith(allowed_prefixes)
+        ]
+        if ui_outside_allowlist:
+            violations.append(
+                "UI-scoped bug modified UI files outside allowlist: "
+                + ", ".join(ui_outside_allowlist[:20])
+            )
 
     return violations
 
@@ -434,31 +453,156 @@ def _wait_for_preview_ready(port: int = E2E_PREVIEW_PORT, timeout_sec: int = E2E
     return False
 
 
-def _parse_check_error_paths(full_output: str, repo_path: str) -> List[str]:
-    """Parse svelte-check/tsc-style output; return list of relative paths that have errors."""
+def _run_project_check(repo_path: str, timeout_sec: int = PREFLIGHT_CHECK_TIMEOUT) -> Tuple[bool, str]:
+    """
+    Run project check with bun/npm fallback.
+    Returns (passed, combined_output_from_last_attempt_or_successful_run).
+    """
+    last_out, last_err = "", ""
+    for check_cmd in (["bun", "run", "check"], ["npm", "run", "check"]):
+        code, out, err = _run_cmd(check_cmd, repo_path, timeout_sec=timeout_sec)
+        last_out, last_err = out, err
+        if code == 0:
+            return True, (out + "\n" + err).strip()
+    return False, (last_out + "\n" + last_err).strip()
+
+
+def _normalize_check_path(path_raw: str, repo_norm: str) -> Optional[str]:
+    """Normalize a check output path to repo-relative unix-style form."""
+    raw = (path_raw or "").strip()
+    if not raw:
+        return None
+    raw = re.sub(r"^(?:File|file)\s*:\s*", "", raw).strip()
+    raw = re.sub(r"^at\s+", "", raw).strip()
+    if not raw:
+        return None
+
+    if repo_norm in raw:
+        raw = raw[raw.index(repo_norm) :]
+
+    if os.path.isabs(raw) and raw.startswith(repo_norm):
+        rel = raw[len(repo_norm) :].lstrip(os.sep).replace("\\", "/").lstrip("./")
+    else:
+        rel = raw.replace("\\", "/").lstrip("./")
+    return rel or None
+
+
+def _parse_check_diagnostics(full_output: str, repo_path: str) -> List[Tuple[str, str]]:
+    """
+    Parse diagnostics as (relative_path, severity) where severity is:
+    - "error"
+    - "warning"
+    - "unknown"
+    """
     repo_norm = os.path.normpath(repo_path).rstrip(os.sep)
     if not repo_norm:
         return []
+
+    lines = (full_output or "").splitlines()
+    diagnostics: List[Tuple[str, str]] = []
+    i = 0
+    path_re = re.compile(r"^(.+?):(\d+):(\d+)\s*$")
+    inline_re = re.compile(r"^(.+?):(\d+):(\d+)\s+(Error|Warn|Warning)\s*:", re.IGNORECASE)
+
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line:
+            i += 1
+            continue
+
+        rel_path: Optional[str] = None
+        severity = "unknown"
+
+        inline = inline_re.match(line)
+        if inline:
+            rel_path = _normalize_check_path(inline.group(1), repo_norm)
+            level = inline.group(4).lower()
+            severity = "error" if level == "error" else "warning"
+            i += 1
+        else:
+            m = path_re.match(line)
+            if not m:
+                i += 1
+                continue
+            rel_path = _normalize_check_path(m.group(1), repo_norm)
+            j = i + 1
+            while j < len(lines):
+                probe = lines[j].strip()
+                if not probe:
+                    j += 1
+                    continue
+                if path_re.match(probe) or inline_re.match(probe):
+                    break
+                if "Error:" in probe:
+                    severity = "error"
+                    break
+                if "Warn:" in probe or "Warning:" in probe:
+                    severity = "warning"
+                    break
+                j += 1
+            i += 1
+
+        if rel_path:
+            diagnostics.append((rel_path, severity))
+
+    return diagnostics
+
+
+@activity.defn
+async def preflight_repository_check(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Run a baseline check before any agent edits.
+    Returns:
+      - baseline_ok: bool
+      - baseline_error_paths: List[str]
+      - baseline_summary: str
+    """
+    repo_path = payload["repo_path"]
+    bug_id = payload["bug_id"]
+    workflow_id = payload.get("workflow_id")
+    await log_dev_event(
+        bug_id,
+        "preflight_repository_check",
+        "🧪 Preflight: running baseline project check before edits...",
+        "info",
+        workflow_id,
+    )
+    passed, output = _run_project_check(repo_path, timeout_sec=PREFLIGHT_CHECK_TIMEOUT)
+    if passed:
+        await log_dev_event(
+            bug_id,
+            "preflight_repository_check",
+            "✅ Preflight baseline check passed.",
+            "success",
+            workflow_id,
+        )
+        return {"baseline_ok": True, "baseline_error_paths": [], "baseline_summary": ""}
+
+    error_paths = _parse_check_error_paths(output, repo_path)
+    summary = (
+        "Baseline project check failed before agent edits. "
+        f"Detected {len(error_paths)} error path(s)."
+    )
+    await log_dev_event(
+        bug_id,
+        "preflight_repository_check",
+        "⚠️ " + summary,
+        "warning",
+        workflow_id,
+    )
+    return {
+        "baseline_ok": False,
+        "baseline_error_paths": error_paths[:500],
+        "baseline_summary": (output or summary)[:4000],
+    }
+
+
+def _parse_check_error_paths(full_output: str, repo_path: str) -> List[str]:
+    """Return unique relative paths that have Error diagnostics."""
     seen: set[str] = set()
-    # Match "path:line:col" at start of line (svelte-check format)
-    for m in re.finditer(r"^(.+?):(\d+):(\d+)", full_output, re.MULTILINE):
-        path_raw = m.group(1).strip()
-        if not path_raw or path_raw.startswith("("):
-            continue
-        try:
-            # Normalize common prefixes from Vite/Svelte output, e.g. "File: /abs/path/to/file.svelte"
-            path_raw = re.sub(r"^(?:File|file)\s*:\s*", "", path_raw).strip()
-            path_raw = re.sub(r"^at\s+", "", path_raw).strip()
-            if repo_norm in path_raw:
-                path_raw = path_raw[path_raw.index(repo_norm) :]
-            if os.path.isabs(path_raw) and path_raw.startswith(repo_norm):
-                rel = path_raw[len(repo_norm) :].lstrip(os.sep).replace("\\", "/").lstrip("./")
-            else:
-                rel = path_raw.replace("\\", "/").lstrip("./")
-            if rel and rel not in seen:
-                seen.add(rel)
-        except Exception:
-            continue
+    for rel_path, severity in _parse_check_diagnostics(full_output, repo_path):
+        if severity == "error" and rel_path not in seen:
+            seen.add(rel_path)
     return list(seen)
 
 
@@ -470,14 +614,13 @@ def _path_matches_modified(err_path: str, modified_path: str) -> bool:
 
 
 def _output_mentions_modified_file(full_output: str, modified_files: List[str]) -> bool:
-    """Best-effort guard: if failed output mentions a modified file, don't bypass."""
+    """Guard based on exact normalized path mentions only (no basename matching)."""
     out = full_output.replace("\\", "/")
     for p in modified_files:
         rel = p.replace("\\", "/").lstrip("./")
-        base = os.path.basename(rel)
-        if rel and rel in out:
-            return True
-        if base and base in out:
+        if not rel:
+            continue
+        if rel in out or ("/" + rel) in out:
             return True
     return False
 
@@ -488,6 +631,12 @@ async def verify_fix(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     repo_path = payload["repo_path"]
     bug_id = payload["bug_id"]
     bug_data_raw = payload.get("bug_data")
+    baseline_error_paths_raw = payload.get("baseline_error_paths") or []
+    baseline_error_paths = [
+        str(p).replace("\\", "/").lstrip("./")
+        for p in baseline_error_paths_raw
+        if isinstance(p, str) and p.strip()
+    ]
     bug_data: Optional[DevActionInput] = None
     if isinstance(bug_data_raw, dict):
         try:
@@ -553,11 +702,12 @@ async def verify_fix(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         check_ok = False
         last_code = -1
         last_out, last_err = "", ""
+        check_timeout_sec = int(os.getenv("DEV_AGENT_CHECK_TIMEOUT_SEC", "240"))
         for check_cmd, name in (
             (["bun", "run", "check"], "bun run check"),
             (["npm", "run", "check"], "npm run check"),
         ):
-            code, out, err = _run_cmd(check_cmd, repo_path, timeout_sec=120)
+            code, out, err = _run_cmd(check_cmd, repo_path, timeout_sec=check_timeout_sec)
             last_code, last_out, last_err = code, out, err
             if code == 0:
                 check_ok = True
@@ -658,32 +808,47 @@ async def verify_fix(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
             await log_dev_event(bug_id, "verify_fix", "✅ E2E smoke passed.", "success", workflow_id)
             return True, None
 
-        # Bypass pre-existing errors: fail only if check reported errors in files modified in this run.
-        # Set DEV_AGENT_VERIFY_STRICT=1 to always fail on any check failure (no bypass).
-        if os.getenv("DEV_AGENT_VERIFY_STRICT", "").strip() in ("1", "true", "yes"):
+        verify_mode = (os.getenv("DEV_AGENT_VERIFY_MODE") or "hybrid").strip().lower()
+        if verify_mode not in ("edited_only", "hybrid", "strict"):
+            verify_mode = "hybrid"
+
+        # Backward-compat strict toggle: fail on any check failure.
+        if verify_mode == "strict" or os.getenv("DEV_AGENT_VERIFY_STRICT", "").strip() in ("1", "true", "yes"):
             error_msg = (last_out + "\n" + last_err).strip() or "Project check failed (syntax/type errors)."
             await log_dev_event(bug_id, "verify_fix", "❌ Verification failed:\n" + error_msg[:2000], "error", workflow_id)
             return False, error_msg
 
         modified = _get_modified_files(repo_path)
         full_output = (last_out + "\n" + last_err).strip()
-        error_paths = _parse_check_error_paths(full_output, repo_path)
+        current_error_paths = _parse_check_error_paths(full_output, repo_path)
+        baseline_error_set = [b.replace("\\", "/").lstrip("./") for b in baseline_error_paths]
+        new_error_paths = [
+            p for p in current_error_paths
+            if not any(_path_matches_modified(p, b) for b in baseline_error_set)
+        ]
         errors_in_modified = (
-            [p for p in error_paths if any(_path_matches_modified(p, m) for m in modified)]
+            [p for p in new_error_paths if any(_path_matches_modified(p, m) for m in modified)]
             if modified
             else []
         )
         logging.info(
-            "[verify_fix] check failed. modified=%s error_paths=%s errors_in_modified=%s",
-            modified[:20],
-            error_paths[:20],
-            errors_in_modified[:20],
+            "[verify_fix] check failed summary: mode=%s modified=%d baseline_errors=%d current_errors=%d new_errors=%d new_errors_in_modified=%d",
+            verify_mode,
+            len(modified),
+            len(baseline_error_set),
+            len(current_error_paths),
+            len(new_error_paths),
+            len(errors_in_modified),
         )
 
-        if modified and error_paths and not errors_in_modified:
-            # Safety guard: don't bypass when output mentions any modified file.
-            if _output_mentions_modified_file(full_output, modified):
-                error_msg = "Project check output references modified files; not bypassing.\n\n" + full_output[:1500]
+        if verify_mode == "edited_only":
+            if errors_in_modified:
+                error_msg = (
+                    "New errors in modified files:\n"
+                    + "\n".join(errors_in_modified[:20])
+                    + "\n\n"
+                    + full_output[:1500]
+                )
                 await log_dev_event(
                     bug_id, "verify_fix",
                     "❌ Verification failed:\n" + error_msg[:2000],
@@ -691,19 +856,67 @@ async def verify_fix(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
                     workflow_id,
                 )
                 return False, error_msg
+
             await log_dev_event(
                 bug_id, "verify_fix",
-                "✅ Step 3/5 done. Bypassing: errors only in pre-existing files (none in your changes).",
+                (
+                    "✅ Step 3/5 done. Edited-only mode: no new errors in modified files. "
+                    f"Ignoring {len(new_error_paths)} new error path(s) outside edited files."
+                ),
+                "warning" if new_error_paths else "info",
+                workflow_id,
+            )
+            logging.warning(
+                "[verify_fix] Edited-only pass: outside_modified_new_errors=%d",
+                len(new_error_paths),
+            )
+            return True, None
+
+        if not new_error_paths:
+            await log_dev_event(
+                bug_id, "verify_fix",
+                "✅ Step 3/5 done. Bypassing: no new Error diagnostics beyond baseline.",
                 "info",
                 workflow_id,
             )
-            logging.info("[verify_fix] Bypass: %s error path(s), 0 in modified files. Passing.", len(error_paths))
+            logging.info("[verify_fix] Bypass: no new errors over baseline.")
             return True, None
 
-        # Fail: either we have errors in modified files, or we couldn't determine modified files
+        # If there are no new errors in modified files, default to pass (repo has many pre-existing issues).
+        # Optional strict mode can fail even when new errors are outside modified files.
+        strict_outside_modified = (
+            (os.getenv("DEV_AGENT_VERIFY_STRICT_OUTSIDE_MODIFIED") or "").strip().lower()
+            in ("1", "true", "yes")
+        )
+        if not errors_in_modified and new_error_paths:
+            if not strict_outside_modified:
+                await log_dev_event(
+                    bug_id,
+                    "verify_fix",
+                    (
+                        "✅ Step 3/5 done. Bypassing: new diagnostics are outside modified files "
+                        "(strict outside-modified check disabled)."
+                    ),
+                    "warning",
+                    workflow_id,
+                )
+                logging.warning(
+                    "[verify_fix] Bypass: %d new error path(s) outside modified files (strict disabled).",
+                    len(new_error_paths),
+                )
+                return True, None
+
+        # Fail on newly introduced errors. Prioritize modified-file errors in message.
         error_msg = full_output or "Project check failed (syntax/type errors)."
         if errors_in_modified:
-            error_msg = "Errors in modified files:\n" + "\n".join(errors_in_modified[:20]) + "\n\n" + error_msg[:1500]
+            error_msg = "New errors in modified files:\n" + "\n".join(errors_in_modified[:20]) + "\n\n" + error_msg[:1500]
+        else:
+            error_msg = (
+                "New project errors introduced outside modified files:\n"
+                + "\n".join(new_error_paths[:20])
+                + "\n\n"
+                + error_msg[:1500]
+            )
         await log_dev_event(
             bug_id, "verify_fix",
             "❌ Verification failed:\n" + error_msg[:2000],

@@ -80,6 +80,17 @@ When E2E is enabled but changes are not only UI, the log shows: *“Skipping E2E
 - **Python**: 3.9+ with `pip install -r requirements.txt`.
 - **Temporal CLI**: `brew install temporal` for local dev (recommended). Or use [Temporal Cloud](https://temporal.io/cloud) and set `TEMPORAL_URL` in `.env`.
 
+### Optional model routing (coding quality tuning)
+
+You can tune model selection per node in the dev agent pipeline:
+
+- `DEV_AGENT_MODEL_DEFAULT` – model used by coder/reviewer by default.
+- `DEV_AGENT_MODEL_PLANNER` – model used by planner node.
+- `DEV_AGENT_MODEL_ESCALATED` – stronger model used for coder/reviewer when retry context is detected.
+- `DEV_AGENT_MODEL_ESCALATE_ON_RETRY` – `1/true/yes` (default) enables auto-escalation on retry contexts.
+
+If not set, all nodes use the current built-in default model.
+
 ## Test repo flow (branch + PR, no LLM)
 
 To run the full pipeline up to **creating a branch and PR** without the LLM (quick, ~1–2 min):
