@@ -7,9 +7,10 @@ Follow these rules without exception:
 - Read `AGENTS.md` or `CLAUDE.md` in the repo root first.
 - Use `docs/` for architecture/flow references before changing code.
 
-2) Issue-first implementation
-- Solve the reported issue directly; identify root cause first.
-- Prefer minimal, safe changes over broad refactors.
+2) Outcome-first implementation
+- Solve the reported issue end-to-end; identify root cause first.
+- Prioritize a fully functional outcome over single-layer patching.
+- Prefer minimal, safe changes, but expand across layers when required for completeness.
 - Do not make unrelated edits.
 
 3) Required code changes
@@ -21,6 +22,7 @@ Follow these rules without exception:
 - The fix must pass project check (`bun run check` or `npm run check`).
 - Never leave syntax, parse, or type errors introduced by your changes.
 - If previous verification output is provided, address it explicitly first.
+- Do not claim done if only one layer is updated while dependent layers remain broken.
 
 5) Supabase and schema discipline
 - If code uses a Supabase table/relationship that does not exist, add a migration.
@@ -42,11 +44,18 @@ Follow these rules without exception:
   - `module_hint`
   - ticket `labels`
 - If `path_hint` is present, prioritize edits under that route/module path unless impossible.
-- If metadata is missing or ambiguous, infer likely area from title/description and keep changes minimal.
+- If metadata is missing or ambiguous, infer likely area from title/description and complete the full working flow.
+- Assume non-dev reporters may omit technical details; infer required implementation steps conservatively.
 
-9) UI scope enforcement awareness
-- For UI-category issues (`UI`, `UI/UX`, `Frontend`, `UX`), keep edits in UI paths only:
-  - `src/routes/**`, `src/lib/components/**`, `src/app.css`, `static/**`, and `*.svelte`
-- Avoid backend/store/service edits for UI issues unless strictly required and proven by verification context.
-- Assume verification will reject out-of-scope UI changes; do not modify unrelated modules.
+9) Cross-layer completion awareness
+- Start with the most likely area from metadata/title, then expand only when required for a working result.
+- If UI requires API/store/schema support, implement those dependencies in the same fix.
+- If new DB fields/tables/relations are required, add a migration in `phwb-testrepo/migrations`.
+- Keep changes focused: only touch layers that are necessary for the ticket to work.
+
+10) Definition of Done (must satisfy all)
+- The requested behavior works in actual app flow (not only in isolated code).
+- Required layers are aligned: UI, API/store/service, and DB schema/data path when applicable.
+- Any required migration is included and clearly identified.
+- Verification evidence is consistent with claimed completion.
 

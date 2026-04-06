@@ -63,7 +63,15 @@ class DevFixWorkflow:
             baseline_error_paths = preflight.get("baseline_error_paths", []) if isinstance(preflight, dict) else []
             baseline_ok = bool(preflight.get("baseline_ok", True)) if isinstance(preflight, dict) else True
             baseline_summary = str(preflight.get("baseline_summary", "") or "") if isinstance(preflight, dict) else ""
-            if not baseline_ok:
+            preflight_status = str(preflight.get("preflight_status", "passed")) if isinstance(preflight, dict) else "passed"
+            preflight_reason = str(preflight.get("preflight_reason", "") or "") if isinstance(preflight, dict) else ""
+            if preflight_status == "skipped":
+                logging.info(
+                    "[DevFix] Preflight skipped (%s). Continuing. %s",
+                    preflight_reason,
+                    baseline_summary[:300],
+                )
+            elif not baseline_ok:
                 logging.warning(
                     "[DevFix] Preflight baseline check found pre-existing check errors; continuing in baseline-aware mode. %s",
                     baseline_summary[:300],
@@ -133,8 +141,8 @@ class DevFixWorkflow:
 
             from temporalio.common import RetryPolicy
 
-            logging.info("[DevFix] Step 4/5: Create pull request (commit, push, open PR)")
-            pr_url = await workflow.execute_activity(
+            logging.info("[DevFix] Step 4/5: Prepare handoff (commit, push, staging/PR)")
+            handoff = await workflow.execute_activity(
                 create_pull_request,
                 {
                     "repo_path": repo_path,
@@ -142,19 +150,36 @@ class DevFixWorkflow:
                     "bug_data": input_data.dict(),
                     "workflow_id": workflow_id,
                 },
-                start_to_close_timeout=timedelta(minutes=2),
+                start_to_close_timeout=timedelta(minutes=8),
                 retry_policy=RetryPolicy(non_retryable_error_types=["ValueError"])
             )
-            logging.info(f"[DevFix] Step 4/5 done. PR: {pr_url}")
+            # Backward-compatible handoff parsing:
+            # - new activity returns dict {pr_url, staging_url, ...}
+            # - older worker code may still return a raw PR URL string
+            if isinstance(handoff, dict):
+                pr_url = handoff.get("pr_url")
+                staging_url = handoff.get("staging_url")
+            elif isinstance(handoff, str) and handoff.strip().startswith("http"):
+                pr_url = handoff.strip()
+                staging_url = None
+            else:
+                pr_url = None
+                staging_url = None
+            logging.info("[DevFix] Step 4/5 done. staging=%s pr=%s", bool(staging_url), bool(pr_url))
 
             logging.info("[DevFix] Step 5/5: Update bug ticket (comment + status)")
             await workflow.execute_activity(
                 update_bug_ticket,
-                {"bug_id": input_data.bug_id, "pr_url": pr_url, "workflow_id": workflow_id},
+                {
+                    "bug_id": input_data.bug_id,
+                    "pr_url": pr_url,
+                    "staging_url": staging_url,
+                    "workflow_id": workflow_id,
+                },
                 start_to_close_timeout=timedelta(minutes=1),
             )
             logging.info(f"[DevFix] Step 5/5 done. Workflow complete for Bug #{input_data.bug_id}.")
-            return {"status": "success", "pr_url": pr_url}
+            return {"status": "success", "pr_url": pr_url, "staging_url": staging_url}
 
         except Exception as e:
             logging.error(f"[DevFix] Workflow failed for Bug #{input_data.bug_id}: {e}")

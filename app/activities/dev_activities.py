@@ -17,6 +17,7 @@ E2E_WAIT_READY_TIMEOUT = 60
 E2E_BUILD_TIMEOUT = 300
 E2E_PLAYWRIGHT_TIMEOUT = 300
 PREFLIGHT_CHECK_TIMEOUT = 180
+PREFLIGHT_INSTALL_TIMEOUT = 300
 
 class DevActionInput(BaseModel):
     bug_id: int
@@ -139,6 +140,67 @@ def _build_scope_hint(bug_data: DevActionInput) -> str:
     return "## Scope constraints\n" + "\n".join(lines) + "\n"
 
 
+def _infer_ticket_type(bug_data: DevActionInput) -> str:
+    text = f"{bug_data.title} {bug_data.description or ''}".lower()
+    if any(k in text for k in ("error", "fail", "broken", "bug", "not working", "exception")):
+        return "bug_fix"
+    if any(k in text for k in ("improve", "enhance", "optimize", "refine", "update")):
+        return "enhancement"
+    if any(k in text for k in ("add", "create", "new", "support", "enable", "implement")):
+        return "feature"
+    return "bug_fix"
+
+
+def _build_implementation_contract(
+    bug_data: DevActionInput,
+    last_error: Optional[str] = None,
+) -> Dict[str, Any]:
+    text = f"{bug_data.title} {bug_data.description or ''} {bug_data.category}".lower()
+    err = (last_error or "").lower()
+    layers: List[str] = []
+
+    ui_signals = ("ui", "ux", "page", "screen", "button", "form", "modal", "tab", "toggle", "table")
+    backend_signals = ("api", "endpoint", "server", "backend", "store", "service", "hook")
+    db_signals = ("supabase", "database", "db", "table", "column", "relation", "migration", "schema", "foreign key")
+
+    if any(s in text for s in ui_signals) or _is_ui_category(bug_data.category):
+        layers.append("UI")
+    if any(s in text for s in backend_signals):
+        layers.append("API/Backend")
+    if any(s in text for s in db_signals):
+        layers.append("DB")
+
+    # Retry context can indicate additional layers that must be addressed.
+    if "src/lib/stores/" in err or "/+server.ts" in err or "api/" in err:
+        if "API/Backend" not in layers:
+            layers.append("API/Backend")
+    if "pgrst" in err or "supabase" in err or "schema cache" in err or "relation" in err:
+        if "DB" not in layers:
+            layers.append("DB")
+
+    if not layers:
+        # Non-dev reports are often ambiguous; default to UI first but allow expansion.
+        layers.append("UI")
+
+    requires_migration = "DB" in layers
+    checks: List[str] = [
+        "User-visible behavior from the ticket works end-to-end in the affected flow.",
+        "No syntax/type errors are introduced in modified files.",
+        "Changes remain scoped to files necessary for this ticket.",
+    ]
+    if "API/Backend" in layers:
+        checks.append("API/store/service behavior matches the UI behavior and persists correctly.")
+    if "DB" in layers:
+        checks.append("Required migration is added under `phwb-testrepo/migrations` and schema usage is consistent.")
+
+    return {
+        "ticket_type": _infer_ticket_type(bug_data),
+        "impacted_layers": layers,
+        "requires_migration": requires_migration,
+        "acceptance_checks": checks,
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging helper — writes a row to phwb_dev_logs for realtime display in PHWB
 # ─────────────────────────────────────────────────────────────────────────────
@@ -166,6 +228,174 @@ async def log_dev_event(
     except Exception as e:
         # Never let logging failures crash the workflow
         logging.warning(f"log_dev_event failed: {e}")
+
+
+def _detect_migration_files(modified_files: List[str]) -> List[str]:
+    """Return changed SQL migration files."""
+    return [
+        p.replace("\\", "/").lstrip("./")
+        for p in modified_files
+        if p.replace("\\", "/").startswith("migrations/") and p.lower().endswith(".sql")
+    ]
+
+
+def _db_change_metadata(modified_files: List[str]) -> Dict[str, Any]:
+    migration_files = _detect_migration_files(modified_files)
+    return {
+        "db_changes_detected": len(migration_files) > 0,
+        "migration_files": migration_files[:50],
+        "requires_db_confirmation": len(migration_files) > 0,
+    }
+
+
+def _is_backend_path(path: str) -> bool:
+    p = path.replace("\\", "/").lstrip("./")
+    if p.startswith("src/routes/api/"):
+        return True
+    if p.endswith("+server.ts") or p.endswith("+server.js"):
+        return True
+    if p.startswith("src/lib/stores/") or p.startswith("src/lib/services/"):
+        return True
+    if p in ("src/hooks.server.ts", "src/hooks.server.js"):
+        return True
+    return False
+
+
+def _functional_completeness_warnings(
+    modified_files: List[str],
+    bug_data: Optional[DevActionInput],
+) -> List[str]:
+    """
+    Non-blocking completeness checks (phase B2 first pass).
+    These warnings help catch likely partial implementations from non-dev tickets.
+    """
+    if not modified_files or not bug_data:
+        return []
+
+    contract = _build_implementation_contract(bug_data)
+    impacted = set(contract.get("impacted_layers", []))
+    migrations = _detect_migration_files(modified_files)
+
+    ui_touched = any(_is_ui_path(p) for p in modified_files)
+    backend_touched = any(_is_backend_path(p) for p in modified_files)
+    warnings: List[str] = []
+
+    if "API/Backend" in impacted and not backend_touched:
+        warnings.append(
+            "Implementation contract expects API/Backend work, but modified files appear UI-only."
+        )
+
+    if "UI" in impacted and not ui_touched:
+        warnings.append(
+            "Implementation contract expects UI work, but no UI paths were modified."
+        )
+
+    if contract.get("requires_migration") and not migrations:
+        warnings.append(
+            "Implementation contract indicates DB/schema changes, but no migration file was modified."
+        )
+
+    # If DB paths were touched indirectly via backend/store but no migration was included, call it out.
+    if "DB" in impacted and backend_touched and not migrations:
+        warnings.append(
+            "DB-related ticket context detected without migration updates; confirm schema already exists."
+        )
+
+    return warnings[:10]
+
+
+def _functional_completeness_failures(
+    modified_files: List[str],
+    bug_data: Optional[DevActionInput],
+) -> List[str]:
+    """
+    Critical completeness checks that can be promoted to blocking behavior.
+    """
+    if not modified_files or not bug_data:
+        return []
+
+    contract = _build_implementation_contract(bug_data)
+    impacted = set(contract.get("impacted_layers", []))
+    migrations = _detect_migration_files(modified_files)
+    ui_touched = any(_is_ui_path(p) for p in modified_files)
+    backend_touched = any(_is_backend_path(p) for p in modified_files)
+
+    failures: List[str] = []
+    if "API/Backend" in impacted and not backend_touched:
+        failures.append("Expected API/Backend layer changes were not implemented.")
+    if "UI" in impacted and not ui_touched:
+        failures.append("Expected UI layer changes were not implemented.")
+    if contract.get("requires_migration") and not migrations:
+        failures.append("DB/schema changes appear required, but no migration file was added.")
+    return failures[:10]
+
+
+def _detect_missing_schema_references(output: str) -> List[str]:
+    """
+    Parse verify/check output for likely DB schema object issues.
+    Non-blocking signal used to suggest migration/schema follow-up.
+    """
+    text = output or ""
+    findings: List[str] = []
+
+    # PostgREST missing table in schema cache
+    for m in re.finditer(r"Could not find the table '([^']+)' in the schema cache", text, re.IGNORECASE):
+        findings.append(f"missing_table:{m.group(1)}")
+
+    # PostgREST missing relationship in schema cache
+    for m in re.finditer(
+        r"Could not find a relationship between '([^']+)' and '([^']+)' in the schema cache",
+        text,
+        re.IGNORECASE,
+    ):
+        findings.append(f"missing_relationship:{m.group(1)}->{m.group(2)}")
+
+    # PostgreSQL relation does not exist
+    for m in re.finditer(r"relation \"([^\"]+)\" does not exist", text, re.IGNORECASE):
+        findings.append(f"missing_relation:{m.group(1)}")
+
+    # Dedupe while preserving order
+    seen: set[str] = set()
+    deduped: List[str] = []
+    for item in findings:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+    return deduped[:20]
+
+
+async def log_workflow_state(
+    bug_id: int,
+    state: str,
+    detail: str,
+    workflow_id: Optional[str] = None,
+    post_comment: bool = True,
+) -> None:
+    """
+    Log standardized workflow state transitions and optionally surface them in bug comments.
+    This avoids changing the phwb_bugs status enum while making progress visible.
+    """
+    state_msg = f"🔖 Workflow state → `{state}`. {detail}".strip()
+    await log_dev_event(bug_id, "workflow_state", state_msg, "info", workflow_id)
+
+    if not post_comment:
+        return
+    try:
+        from app.supabase_client import get_supabase_client
+
+        supabase = get_supabase_client("DEV_AGENT")
+        if not supabase:
+            return
+        supabase.table("phwb_bug_comments").insert(
+            {
+                "bug_id": bug_id,
+                "user_id": None,
+                "content": state_msg,
+                "is_internal": False,
+            }
+        ).execute()
+    except Exception as e:
+        logging.warning("log_workflow_state comment insert failed: %s", e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -282,12 +512,21 @@ def _build_dev_fix_instruction(repo_path: str, bug_data: DevActionInput, last_er
         "Use docs/ for architecture as needed. Then implement the bug fix below.\n\n"
     )
 
+    contract = _build_implementation_contract(bug_data, last_error=last_error)
+
     task = (
         f"## Bug to fix\n"
         f"- **ID:** #{bug_data.bug_id}\n"
         f"- **Title:** {bug_data.title}\n"
         f"- **Description:** {bug_data.description or '(No description provided)'}\n"
         f"- **Category:** {bug_data.category}\n\n"
+        f"## Implementation contract (create before editing)\n"
+        f"- **Ticket type:** {contract['ticket_type']}\n"
+        f"- **Impacted layers:** {', '.join(contract['impacted_layers'])}\n"
+        f"- **Migration likely required:** {'yes' if contract['requires_migration'] else 'no'}\n"
+        f"- **Acceptance checks:**\n"
+        + "".join(f"  - {c}\n" for c in contract["acceptance_checks"])
+        + "\n"
         f"## What to do\n"
         f"1. Locate the code that causes or relates to this bug.\n"
         f"2. Make at least one concrete code change (use the write_file tool) that fixes or addresses the issue. Prefer a minimal, single-file change when possible.\n"
@@ -317,6 +556,20 @@ async def analyze_and_code(config: Dict[str, Any]) -> None:
 
     await log_dev_event(bug_data.bug_id, "analyze_and_code", "🤖 Step 2/5: Dev Agent analyzing bug and codebase...", "info", workflow_id)
     logging.info("[analyze_and_code] Building instruction and running agent")
+
+    contract = _build_implementation_contract(bug_data, last_error=last_error)
+    await log_dev_event(
+        bug_data.bug_id,
+        "analyze_and_code",
+        (
+            "🧾 Implementation contract: "
+            f"type={contract['ticket_type']} | "
+            f"layers={','.join(contract['impacted_layers'])} | "
+            f"migration_required={'yes' if contract['requires_migration'] else 'no'}"
+        ),
+        "info",
+        workflow_id,
+    )
 
     prompt = _build_dev_fix_instruction(repo_path, bug_data, last_error)
     if last_error:
@@ -467,6 +720,43 @@ def _run_project_check(repo_path: str, timeout_sec: int = PREFLIGHT_CHECK_TIMEOU
     return False, (last_out + "\n" + last_err).strip()
 
 
+def _is_tooling_failure_output(text: str) -> bool:
+    t = (text or "").lower()
+    return any(
+        token in t
+        for token in (
+            "command not found",
+            "svelte-kit: command not found",
+            "bun or npm not in path",
+            "could not determine executable to run",
+            "npm err! enoent",
+            "enoent: no such file or directory",
+        )
+    )
+
+
+def _ensure_dependencies_for_check(repo_path: str) -> Tuple[bool, str]:
+    """
+    Ensure dependencies are available before running baseline check.
+    Returns (ready, reason), where reason explains skip/failure context.
+    """
+    node_modules_path = os.path.join(repo_path, "node_modules")
+    if os.path.isdir(node_modules_path):
+        return True, "already_installed"
+
+    last_output = ""
+    for install_cmd in (["bun", "install"], ["npm", "install", "--no-audit", "--no-fund"]):
+        code, out, err = _run_cmd(install_cmd, repo_path, timeout_sec=PREFLIGHT_INSTALL_TIMEOUT)
+        combined = (out + "\n" + err).strip()
+        if code == 0:
+            return True, "installed_for_preflight"
+        last_output = combined
+
+    if _is_tooling_failure_output(last_output):
+        return False, "tooling_unavailable"
+    return False, "dependency_install_failed"
+
+
 def _normalize_check_path(path_raw: str, repo_norm: str) -> Optional[str]:
     """Normalize a check output path to repo-relative unix-style form."""
     raw = (path_raw or "").strip()
@@ -567,6 +857,27 @@ async def preflight_repository_check(payload: Dict[str, Any]) -> Dict[str, Any]:
         "info",
         workflow_id,
     )
+    deps_ready, deps_reason = _ensure_dependencies_for_check(repo_path)
+    if not deps_ready:
+        summary = (
+            "Preflight skipped: dependencies/tooling not ready before baseline check "
+            f"({deps_reason})."
+        )
+        await log_dev_event(
+            bug_id,
+            "preflight_repository_check",
+            "⏭️ " + summary,
+            "warning",
+            workflow_id,
+        )
+        return {
+            "preflight_status": "skipped",
+            "preflight_reason": deps_reason,
+            "baseline_ok": True,
+            "baseline_error_paths": [],
+            "baseline_summary": summary,
+        }
+
     passed, output = _run_project_check(repo_path, timeout_sec=PREFLIGHT_CHECK_TIMEOUT)
     if passed:
         await log_dev_event(
@@ -576,7 +887,30 @@ async def preflight_repository_check(payload: Dict[str, Any]) -> Dict[str, Any]:
             "success",
             workflow_id,
         )
-        return {"baseline_ok": True, "baseline_error_paths": [], "baseline_summary": ""}
+        return {
+            "preflight_status": "passed",
+            "preflight_reason": deps_reason,
+            "baseline_ok": True,
+            "baseline_error_paths": [],
+            "baseline_summary": "",
+        }
+
+    if _is_tooling_failure_output(output):
+        summary = "Preflight skipped: tooling failure while running baseline check."
+        await log_dev_event(
+            bug_id,
+            "preflight_repository_check",
+            "⏭️ " + summary,
+            "warning",
+            workflow_id,
+        )
+        return {
+            "preflight_status": "skipped",
+            "preflight_reason": "tooling_failure_during_check",
+            "baseline_ok": True,
+            "baseline_error_paths": [],
+            "baseline_summary": (output or summary)[:4000],
+        }
 
     error_paths = _parse_check_error_paths(output, repo_path)
     summary = (
@@ -591,6 +925,8 @@ async def preflight_repository_check(payload: Dict[str, Any]) -> Dict[str, Any]:
         workflow_id,
     )
     return {
+        "preflight_status": "failed",
+        "preflight_reason": "baseline_check_failed",
         "baseline_ok": False,
         "baseline_error_paths": error_paths[:500],
         "baseline_summary": (output or summary)[:4000],
@@ -646,9 +982,44 @@ async def verify_fix(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     workflow_id = payload.get("workflow_id")
     await log_dev_event(bug_id, "verify_fix", "🔍 Step 3/5: Verifying fix (dependencies + project check)...", "info", workflow_id)
     logging.info("[verify_fix] Starting verification in %s", repo_path)
+    verify_mode = (os.getenv("DEV_AGENT_VERIFY_MODE") or "hybrid").strip().lower()
+    if verify_mode not in ("edited_only", "hybrid", "strict"):
+        verify_mode = "hybrid"
+    enforce_completeness = (os.getenv("DEV_AGENT_VERIFY_ENFORCE_COMPLETENESS") or "").strip().lower() in ("1", "true", "yes")
+    enforce_schema_refs = (os.getenv("DEV_AGENT_VERIFY_ENFORCE_SCHEMA_REFS") or "").strip().lower() in ("1", "true", "yes")
+    await log_dev_event(
+        bug_id,
+        "verify_fix",
+        (
+            f"ℹ️ Verify mode: `{verify_mode}` "
+            f"(enforce_completeness={'on' if enforce_completeness else 'off'}, "
+            f"enforce_schema_refs={'on' if enforce_schema_refs else 'off'})"
+        ),
+        "info",
+        workflow_id,
+    )
+    logging.info(
+        "[verify_fix] Active verify mode: %s | enforce_completeness=%s | enforce_schema_refs=%s",
+        verify_mode,
+        enforce_completeness,
+        enforce_schema_refs,
+    )
 
     try:
         modified = _get_modified_files(repo_path)
+        db_meta = _db_change_metadata(modified)
+        await log_dev_event(
+            bug_id,
+            "verify_fix",
+            (
+                "🗃️ DB change metadata: "
+                f"db_changes_detected={str(db_meta['db_changes_detected']).lower()} | "
+                f"requires_db_confirmation={str(db_meta['requires_db_confirmation']).lower()} | "
+                f"migration_files={','.join(db_meta['migration_files'][:10]) if db_meta['migration_files'] else '(none)'}"
+            ),
+            "info",
+            workflow_id,
+        )
         scope_violations = _ui_scope_violations(modified, bug_data)
         if scope_violations:
             scope_msg = (
@@ -663,6 +1034,29 @@ async def verify_fix(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
                 workflow_id,
             )
             return False, scope_msg
+
+        completeness_warnings = _functional_completeness_warnings(modified, bug_data)
+        if completeness_warnings:
+            warn_text = " | ".join(completeness_warnings)
+            await log_dev_event(
+                bug_id,
+                "verify_fix",
+                "⚠️ Functional completeness warnings: " + warn_text[:1800],
+                "warning",
+                workflow_id,
+            )
+            logging.warning("[verify_fix] Functional completeness warnings: %s", warn_text)
+        completeness_failures = _functional_completeness_failures(modified, bug_data)
+        if enforce_completeness and completeness_failures:
+            fail_text = " | ".join(completeness_failures)
+            await log_dev_event(
+                bug_id,
+                "verify_fix",
+                "❌ Functional completeness failed: " + fail_text[:1800],
+                "error",
+                workflow_id,
+            )
+            return False, "Functional completeness failed:\n" + "\n".join(completeness_failures)
 
         target_node_modules = os.path.join(repo_path, "node_modules")
         # Optional: copy pre-existing node_modules from host (env path, no hardcoded OS path)
@@ -808,10 +1202,6 @@ async def verify_fix(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
             await log_dev_event(bug_id, "verify_fix", "✅ E2E smoke passed.", "success", workflow_id)
             return True, None
 
-        verify_mode = (os.getenv("DEV_AGENT_VERIFY_MODE") or "hybrid").strip().lower()
-        if verify_mode not in ("edited_only", "hybrid", "strict"):
-            verify_mode = "hybrid"
-
         # Backward-compat strict toggle: fail on any check failure.
         if verify_mode == "strict" or os.getenv("DEV_AGENT_VERIFY_STRICT", "").strip() in ("1", "true", "yes"):
             error_msg = (last_out + "\n" + last_err).strip() or "Project check failed (syntax/type errors)."
@@ -820,6 +1210,28 @@ async def verify_fix(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
 
         modified = _get_modified_files(repo_path)
         full_output = (last_out + "\n" + last_err).strip()
+        schema_findings = _detect_missing_schema_references(full_output)
+        if schema_findings:
+            await log_dev_event(
+                bug_id,
+                "verify_fix",
+                "⚠️ Schema reference warnings (consider migration/schema update): "
+                + ", ".join(schema_findings[:10]),
+                "warning",
+                workflow_id,
+            )
+            logging.warning("[verify_fix] Schema reference warnings: %s", schema_findings[:10])
+            if enforce_schema_refs:
+                schema_msg = "Schema reference checks failed:\n" + "\n".join(schema_findings[:20])
+                await log_dev_event(
+                    bug_id,
+                    "verify_fix",
+                    "❌ " + schema_msg[:1800],
+                    "error",
+                    workflow_id,
+                )
+                return False, schema_msg
+
         current_error_paths = _parse_check_error_paths(full_output, repo_path)
         baseline_error_set = [b.replace("\\", "/").lstrip("./") for b in baseline_error_paths]
         new_error_paths = [
@@ -972,8 +1384,8 @@ async def apply_trivial_test_change(payload: Dict[str, Any]) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @activity.defn
-async def create_pull_request(config: Dict[str, Any]) -> str:
-    """Commits code, pushes branch, and uses PyGithub to raise PR."""
+async def create_pull_request(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Commits/pushes branch, captures staging preview, and optionally raises a PR."""
     repo_path = config["repo_path"]
     branch_name = config["branch_name"]
     bug_data = DevActionInput(**config["bug_data"])
@@ -985,9 +1397,20 @@ async def create_pull_request(config: Dict[str, Any]) -> str:
     repo_name = repo_url.split("github.com/")[-1].replace(".git", "")
     await log_dev_event(
         bug_data.bug_id, "create_pull_request",
-        "📦 Step 4/5: Committing, pushing branch, and creating PR...",
+        "📦 Step 4/5: Committing, pushing branch, and preparing staging/PR handoff...",
         "info", workflow_id
     )
+    modified_files = _get_modified_files(repo_path)
+    migration_files = _detect_migration_files(modified_files)
+    if migration_files:
+        await log_workflow_state(
+            bug_data.bug_id,
+            "code_complete_db_pending",
+            "DB migration changes detected: " + ", ".join(migration_files[:10]),
+            workflow_id=workflow_id,
+            post_comment=True,
+        )
+
     logging.info("[create_pull_request] Staging and committing changes")
 
     try:
@@ -1007,29 +1430,104 @@ async def create_pull_request(config: Dict[str, Any]) -> str:
             cwd=repo_path, shell=True, check=True
         )
         logging.info("[create_pull_request] Pushed branch %s to origin", branch_name)
+        preview_url = await _deploy_and_capture_staging_preview(
+            repo_path=repo_path,
+            branch_name=branch_name,
+            bug_id=bug_data.bug_id,
+            workflow_id=workflow_id,
+        )
+        if preview_url:
+            if migration_files:
+                await log_workflow_state(
+                    bug_data.bug_id,
+                    "staging_ready_db_pending",
+                    f"Staging preview is ready: {preview_url}. DB migration apply/confirmation is still required.",
+                    workflow_id=workflow_id,
+                    post_comment=True,
+                )
+            else:
+                await log_workflow_state(
+                    bug_data.bug_id,
+                    "staging_ready",
+                    f"Staging preview is ready: {preview_url}",
+                    workflow_id=workflow_id,
+                    post_comment=True,
+                )
+            await log_workflow_state(
+                bug_data.bug_id,
+                "ready_for_pr",
+                "Branch pushed and staging preview captured; ready to create PR.",
+                workflow_id=workflow_id,
+                post_comment=False,
+            )
+        else:
+            await log_workflow_state(
+                bug_data.bug_id,
+                "ready_for_pr",
+                "Branch pushed and ready to create PR.",
+                workflow_id=workflow_id,
+                post_comment=False,
+            )
     except subprocess.CalledProcessError as e:
         logging.error(f"Failed to commit/push: {e}")
         await log_dev_event(bug_data.bug_id, "create_pull_request", "❌ Failed to push branch: " + str(e), "error", workflow_id)
         raise
 
-    # Raise PR using PyGithub (lazy import: only in activity, not in workflow sandbox)
-    try:
-        from github import Github
-    except ImportError:
-        raise RuntimeError("PyGithub not installed. Run: pip install PyGithub")
-    g = Github(github_token)
-    repo = g.get_repo(repo_name)
-    
-    await log_dev_event(bug_data.bug_id, "create_pull_request", "🔗 Creating pull request on GitHub...", "info", workflow_id)
-    pr = repo.create_pull(
-        title=f"Fix: {bug_data.title} (Bug #{bug_data.bug_id})",
-        body=f"Automated PR generated by DevAgent to fix bug #{bug_data.bug_id}.\n\n{bug_data.description}",
-        head=branch_name,
-        base="main"
-    )
-    await log_dev_event(bug_data.bug_id, "create_pull_request", "✅ Step 4/5 done. PR: " + pr.html_url, "success", workflow_id)
-    logging.info("[create_pull_request] PR created: %s", pr.html_url)
-    return pr.html_url
+    pr_mode = (os.getenv("DEV_AGENT_PR_MODE") or "after_staging_approval").strip().lower()
+    create_pr_now = pr_mode in ("parallel_draft", "parallel", "immediate")
+    pr_url: Optional[str] = None
+    pr_created = False
+    pr_is_draft = (os.getenv("DEV_AGENT_PR_DRAFT_ON_PARALLEL") or "1").strip().lower() in ("1", "true", "yes")
+
+    if preview_url and not create_pr_now:
+        await log_dev_event(
+            bug_data.bug_id,
+            "create_pull_request",
+            "⏸️ Staging-first mode active: PR creation deferred until staging validation/approval.",
+            "info",
+            workflow_id,
+        )
+    else:
+        # Raise PR using PyGithub (lazy import: only in activity, not in workflow sandbox)
+        try:
+            from github import Github
+        except ImportError:
+            raise RuntimeError("PyGithub not installed. Run: pip install PyGithub")
+        g = Github(github_token)
+        repo = g.get_repo(repo_name)
+
+        await log_dev_event(
+            bug_data.bug_id,
+            "create_pull_request",
+            "🔗 Creating pull request on GitHub...",
+            "info",
+            workflow_id,
+        )
+        pr = repo.create_pull(
+            title=f"Fix: {bug_data.title} (Bug #{bug_data.bug_id})",
+            body=f"Automated PR generated by DevAgent to fix bug #{bug_data.bug_id}.\n\n{bug_data.description}",
+            head=branch_name,
+            base="main",
+            draft=bool(preview_url and pr_is_draft),
+        )
+        pr_url = pr.html_url
+        pr_created = True
+        await log_dev_event(
+            bug_data.bug_id,
+            "create_pull_request",
+            "✅ Step 4/5 done. PR: " + pr_url,
+            "success",
+            workflow_id,
+        )
+        logging.info("[create_pull_request] PR created: %s", pr_url)
+
+    return {
+        "pr_url": pr_url,
+        "staging_url": preview_url,
+        "pr_created": pr_created,
+        "pr_mode": pr_mode,
+        "branch_name": branch_name,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1098,14 +1596,284 @@ def _suggest_fix_for_error(error_msg: str) -> str:
     )
 
 
+def _classify_blocking_layers(error_msg: str) -> List[str]:
+    msg = (error_msg or "").lower()
+    layers: List[str] = []
+
+    ui_signals = (
+        ".svelte",
+        "ui",
+        "frontend",
+        "render",
+        "component",
+        "page",
+        "svelte",
+        "css",
+    )
+    api_signals = (
+        "api",
+        "+server.ts",
+        "endpoint",
+        "request",
+        "response",
+        "405",
+        "401",
+        "403",
+        "404",
+        "406",
+        "500",
+        "store",
+        "service",
+    )
+    db_signals = (
+        "supabase",
+        "pgrst",
+        "schema cache",
+        "relation",
+        "foreign key",
+        "database",
+        "migration",
+        "table",
+        "column",
+        "sql",
+    )
+    deploy_staging_signals = (
+        "staging",
+        "preview",
+        "deploy",
+        "vercel",
+        "build failed",
+        "could not start preview",
+        "e2e",
+    )
+
+    if any(s in msg for s in ui_signals):
+        layers.append("UI")
+    if any(s in msg for s in api_signals):
+        layers.append("API")
+    if any(s in msg for s in db_signals):
+        layers.append("DB")
+    if any(s in msg for s in deploy_staging_signals):
+        layers.append("deploy/staging")
+
+    if not layers:
+        layers.append("API")
+    return layers
+
+
+def _extract_first_url(text: str) -> Optional[str]:
+    if not text:
+        return None
+    match = re.search(r"https?://[^\s)>\"]+", text)
+    if match:
+        return match.group(0)
+    return None
+
+
+def _sanitize_branch_for_subdomain(branch_name: str) -> str:
+    value = (branch_name or "").strip().lower()
+    value = re.sub(r"[^a-z0-9-]+", "-", value)
+    value = re.sub(r"-{2,}", "-", value).strip("-")
+    return value or "preview"
+
+
+async def _deploy_and_capture_staging_preview(
+    *,
+    repo_path: str,
+    branch_name: str,
+    bug_id: int,
+    workflow_id: Optional[str],
+) -> Optional[str]:
+    """
+    Trigger staging/preview deployment and return URL when possible.
+    Supports:
+    - DEV_AGENT_STAGING_DEPLOY_COMMAND (optional shell command)
+    - DEV_AGENT_STAGING_URL_TEMPLATE (optional URL format with {branch} placeholder)
+    """
+    deploy_cmd = (os.getenv("DEV_AGENT_STAGING_DEPLOY_COMMAND") or "").strip()
+    url_template = (os.getenv("DEV_AGENT_STAGING_URL_TEMPLATE") or "").strip()
+    branch_slug = _sanitize_branch_for_subdomain(branch_name)
+
+    if not deploy_cmd and not url_template:
+        await log_dev_event(
+            bug_id,
+            "staging_deploy",
+            "ℹ️ Staging deploy skipped (no deploy command or URL template configured).",
+            "info",
+            workflow_id,
+        )
+        return None
+
+    await log_dev_event(
+        bug_id,
+        "staging_deploy",
+        "🚀 Triggering staging/preview deployment...",
+        "info",
+        workflow_id,
+    )
+
+    resolved_url: Optional[str] = None
+    if url_template:
+        try:
+            resolved_url = url_template.format(branch=branch_slug, branch_name=branch_name)
+        except Exception:
+            resolved_url = url_template
+
+    if deploy_cmd:
+        command = (
+            deploy_cmd.replace("{repo_path}", repo_path)
+            .replace("{branch}", branch_name)
+            .replace("{branch_slug}", branch_slug)
+        )
+        try:
+            proc = subprocess.run(
+                command,
+                cwd=repo_path,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            discovered = _extract_first_url(output)
+            if discovered:
+                resolved_url = discovered
+            if proc.returncode != 0:
+                await log_dev_event(
+                    bug_id,
+                    "staging_deploy",
+                    "⚠️ Staging deploy command failed; continuing with PR flow.\n" + output[:1200],
+                    "warning",
+                    workflow_id,
+                )
+            else:
+                await log_dev_event(
+                    bug_id,
+                    "staging_deploy",
+                    "✅ Staging deploy command completed.",
+                    "success",
+                    workflow_id,
+                )
+        except Exception as e:
+            await log_dev_event(
+                bug_id,
+                "staging_deploy",
+                "⚠️ Staging deploy command error; continuing with PR flow. " + str(e),
+                "warning",
+                workflow_id,
+            )
+
+    if resolved_url:
+        await log_dev_event(
+            bug_id,
+            "staging_deploy",
+            "🔗 Staging preview URL: " + resolved_url,
+            "info",
+            workflow_id,
+        )
+    return resolved_url
+
+
+def _latest_workflow_state_from_log_rows(log_rows: List[Dict[str, Any]]) -> Optional[str]:
+    for row in log_rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("step") or "") != "workflow_state":
+            continue
+        msg = str(row.get("message") or "")
+        m = re.search(r"`([^`]+)`", msg)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def _build_structured_run_summary(
+    *,
+    log_rows: List[Dict[str, Any]],
+    pr_url: Optional[str],
+    staging_url: Optional[str],
+    latest_state: Optional[str],
+) -> str:
+    layers: List[str] = []
+    verify_mode = "unknown"
+    verify_result = "unknown"
+    migration_files: List[str] = []
+    migration_apply_status = "unknown"
+    effective_staging_url = staging_url
+
+    # Parse most-recent-first rows.
+    for row in log_rows:
+        if not isinstance(row, dict):
+            continue
+        step = str(row.get("step") or "")
+        msg = str(row.get("message") or "")
+        if not effective_staging_url:
+            found_url = _extract_first_url(msg)
+            if found_url:
+                effective_staging_url = found_url
+
+        if step == "analyze_and_code" and "Implementation contract:" in msg and not layers:
+            m = re.search(r"layers=([^|]+)", msg)
+            if m and m.group(1).strip():
+                layers = [x.strip() for x in m.group(1).split(",") if x.strip()]
+
+        if step == "verify_fix":
+            if verify_mode == "unknown":
+                m = re.search(r"Verify mode:\s*`([^`]+)`", msg)
+                if m:
+                    verify_mode = m.group(1).strip()
+            if verify_result == "unknown":
+                lower = msg.lower()
+                if "project check passed" in lower or "e2e smoke passed" in lower:
+                    verify_result = "passed"
+                elif "verification failed" in lower or msg.startswith("❌"):
+                    verify_result = "failed"
+            if not migration_files and "DB change metadata:" in msg and "migration_files=" in msg:
+                tail = msg.split("migration_files=", 1)[1].strip()
+                if tail != "(none)":
+                    migration_files = [x.strip() for x in tail.split(",") if x.strip()]
+
+        if step == "db_apply" and migration_apply_status == "unknown":
+            lower = msg.lower()
+            if "db apply completed. applied=" in lower and "failed=0" in lower:
+                migration_apply_status = "applied_success"
+            elif "db apply completed with failures" in lower:
+                migration_apply_status = "applied_with_failures"
+            elif "nothing to apply" in lower:
+                migration_apply_status = "not_required"
+
+    if latest_state in ("code_complete_db_pending", "staging_ready_db_pending"):
+        migration_apply_status = "pending_apply"
+
+    validation_result = "not_started"
+    if latest_state == "staging_validated":
+        validation_result = "approved"
+    elif latest_state == "staging_rejected":
+        validation_result = "rejected"
+    elif latest_state in ("staging_ready", "staging_ready_db_pending"):
+        validation_result = "awaiting_validation"
+
+    return (
+        "### Dev Agent run summary\n\n"
+        f"- Layers changed: {', '.join(layers) if layers else 'unknown'}\n"
+        f"- Verify summary: mode=`{verify_mode}`, result={verify_result}\n"
+        f"- Migration files: {', '.join(migration_files) if migration_files else '(none)'}\n"
+        f"- Migration apply status: {migration_apply_status}\n"
+        f"- Staging link: {effective_staging_url or '(not available)'}\n"
+        f"- User validation result: {validation_result}\n"
+        f"- PR: {pr_url or '(not created yet)'}"
+    )
+
+
 @activity.defn
 async def update_bug_ticket(config: Dict[str, Any]) -> None:
-    """Updates Supabase bug ticket with the PR link or error."""
+    """Updates Supabase bug ticket with staging/PR handoff or error."""
     from app.supabase_client import get_supabase_client
     supabase = get_supabase_client("DEV_AGENT")
     
     bug_id = config["bug_id"]
     pr_url = config.get("pr_url")
+    staging_url = config.get("staging_url")
     error_msg = config.get("error_msg")
     workflow_id = config.get("workflow_id")
     
@@ -1113,26 +1881,143 @@ async def update_bug_ticket(config: Dict[str, Any]) -> None:
         logging.warning("[update_bug_ticket] Supabase not configured. Skipping.")
         return
 
-    if pr_url:
-        await log_dev_event(bug_id, "update_bug_ticket", "📝 Step 5/5: Posting PR link to Comments and setting status to Review...", "info", workflow_id)
+    if pr_url or staging_url:
+        await log_dev_event(
+            bug_id,
+            "update_bug_ticket",
+            "📝 Step 5/5: Posting staging/PR handoff details to comments...",
+            "info",
+            workflow_id,
+        )
+        if staging_url and pr_url:
+            handoff_content = (
+                "✅ **Dev Agent** completed code changes.\n\n"
+                f"**Staging preview:** {staging_url}\n\n"
+                f"**Pull Request:** {pr_url}"
+            )
+        elif staging_url:
+            handoff_content = (
+                "✅ **Dev Agent** completed code changes and prepared a staging preview.\n\n"
+                f"**Staging preview:** {staging_url}\n\n"
+                "Please validate on staging. PR creation is deferred until staging approval."
+            )
+        else:
+            handoff_content = f"✅ **Dev Agent** completed a fix and raised a Pull Request.\n\nPlease review it here: {pr_url}"
+
         supabase.table("phwb_bug_comments").insert({
             "bug_id": bug_id,
             "user_id": None,
-            "content": f"✅ **Dev Agent** completed a fix and raised a Pull Request.\n\nPlease review it here: {pr_url}",
+            "content": handoff_content,
             "is_internal": False,
         }).execute()
-        supabase.table("phwb_bugs").update({"status": "review"}).eq("id", bug_id).execute()
-        await log_dev_event(bug_id, "update_bug_ticket", "🎉 Step 5/5 done. PR link posted; status → Review. All done!", "success", workflow_id)
+        if pr_url:
+            supabase.table("phwb_bugs").update({"status": "review"}).eq("id", bug_id).execute()
+        db_pending = False
+        staging_validated = False
+        latest_state: Optional[str] = None
+        summary_rows: List[Dict[str, Any]] = []
+        try:
+            q = (
+                supabase.from_("phwb_dev_logs")
+                .select("step,message,level,created_at")
+                .eq("bug_id", bug_id)
+            )
+            if workflow_id:
+                q = q.eq("workflow_id", workflow_id)
+            logs_res = q.order("created_at", desc=True).limit(300).execute()
+            log_rows = getattr(logs_res, "data", None) or []
+            summary_rows = [r for r in log_rows if isinstance(r, dict)]
+            latest_state = _latest_workflow_state_from_log_rows(summary_rows)
+
+            db_pending = latest_state in ("code_complete_db_pending", "staging_ready_db_pending")
+            staging_validated = latest_state == "staging_validated"
+        except Exception as e:
+            logging.warning("[update_bug_ticket] Could not determine db_pending state: %s", e)
+
+        if db_pending:
+            await log_workflow_state(
+                bug_id,
+                "code_complete_db_pending",
+                (
+                    "Handoff posted. Waiting for DB migration confirmation/apply before fully_complete."
+                    if not pr_url
+                    else "PR created and bug moved to Review. Waiting for DB migration confirmation/apply before fully_complete."
+                ),
+                workflow_id=workflow_id,
+                post_comment=False,
+            )
+        elif pr_url and staging_validated:
+            await log_workflow_state(
+                bug_id,
+                "fully_complete",
+                "PR created, staging validated, and DB requirements satisfied.",
+                workflow_id=workflow_id,
+                post_comment=False,
+            )
+        elif pr_url:
+            await log_workflow_state(
+                bug_id,
+                "ready_for_pr",
+                "PR created and bug moved to Review. Waiting for staging validation before fully_complete.",
+                workflow_id=workflow_id,
+                post_comment=False,
+            )
+        elif staging_url:
+            await log_workflow_state(
+                bug_id,
+                "staging_ready",
+                f"Staging preview is ready for validation: {staging_url}",
+                workflow_id=workflow_id,
+                post_comment=False,
+            )
+
+        await log_dev_event(
+            bug_id,
+            "update_bug_ticket",
+            (
+                "🎉 Step 5/5 done. Staging handoff posted."
+                if staging_url and not pr_url
+                else "🎉 Step 5/5 done. Handoff posted."
+            ),
+            "success",
+            workflow_id,
+        )
+        # G1: Emit a structured final summary in both logs and comments.
+        summary_text = _build_structured_run_summary(
+            log_rows=summary_rows,
+            pr_url=pr_url,
+            staging_url=staging_url,
+            latest_state=latest_state,
+        )
+        await log_dev_event(
+            bug_id,
+            "run_summary",
+            summary_text,
+            "info",
+            workflow_id,
+        )
+        try:
+            supabase.table("phwb_bug_comments").insert({
+                "bug_id": bug_id,
+                "user_id": None,
+                "content": summary_text,
+                "is_internal": False,
+            }).execute()
+        except Exception as e:
+            logging.warning("[update_bug_ticket] Could not post run summary comment: %s", e)
         logging.info("[update_bug_ticket] Comment + status updated for bug #%s", bug_id)
 
     elif error_msg:
         suggested_fix = _suggest_fix_for_error(error_msg)
+        blocking_layers = _classify_blocking_layers(error_msg)
         await log_dev_event(bug_id, "update_bug_ticket", "📝 Posting error to Comments (internal)...", "info", workflow_id)
         supabase.table("phwb_bug_comments").insert({
             "bug_id": bug_id,
             "user_id": None,
             "content": (
                 "❌ **Dev Agent** could not complete this fix after retry attempts.\n\n"
+                "**Blocking layer(s):**\n"
+                f"- {', '.join(blocking_layers)}\n\n"
                 "**Error:**\n"
                 f"```\n{error_msg}\n```\n\n"
                 "**Suggested fix:**\n"
@@ -1142,9 +2027,29 @@ async def update_bug_ticket(config: Dict[str, Any]) -> None:
         }).execute()
         await log_dev_event(
             bug_id,
+            "failure_classification",
+            "Blocking layers: " + ", ".join(blocking_layers),
+            "warning",
+            workflow_id,
+        )
+        await log_dev_event(
+            bug_id,
             "update_bug_ticket",
             "❌ Error + suggested fix posted to Comments: " + error_msg[:200],
             "error",
             workflow_id,
         )
         logging.info("[update_bug_ticket] Error comment posted for bug #%s", bug_id)
+    else:
+        # Defensive fallback: prevents silent no-op when handoff payload is missing.
+        await log_dev_event(
+            bug_id,
+            "update_bug_ticket",
+            "⚠️ No PR URL or staging URL was provided to update_bug_ticket; nothing was posted.",
+            "warning",
+            workflow_id,
+        )
+        logging.warning(
+            "[update_bug_ticket] No handoff payload (pr_url/staging_url/error_msg) for bug #%s",
+            bug_id,
+        )

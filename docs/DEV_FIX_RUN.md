@@ -91,6 +91,91 @@ You can tune model selection per node in the dev agent pipeline:
 
 If not set, all nodes use the current built-in default model.
 
+### Verify mode (stability vs strictness)
+
+Verification behavior is controlled by `DEV_AGENT_VERIFY_MODE`:
+
+- `edited_only` - default for noisy repos; fail only when new errors are detected in files modified by the current run.
+- `hybrid` - baseline-aware mode; compares current errors against preflight baseline and allows unrelated/baseline errors.
+- `strict` - fail on any check failure.
+
+Related toggles:
+
+- `DEV_AGENT_VERIFY_STRICT=1` - backward-compatible strict override (equivalent to strict fail behavior).
+- `DEV_AGENT_CHECK_TIMEOUT_SEC` - timeout for project check command in verify (default `240`).
+- `DEV_AGENT_VERIFY_STRICT_OUTSIDE_MODIFIED=1` - in hybrid mode, fail when new errors are outside modified files.
+- `DEV_AGENT_VERIFY_ENFORCE_COMPLETENESS=1` - promote critical completeness checks (missing required UI/API/DB-migration layers) to blocking failures.
+- `DEV_AGENT_VERIFY_ENFORCE_SCHEMA_REFS=1` - fail verify when output shows missing schema objects (missing table/relation/schema cache).
+
+Runtime logs now include active verify mode at the start of each `verify_fix` run.
+
+### DB migration preview/apply APIs
+
+The backend provides migration APIs for confirmation flow:
+
+- `POST /api/dev/fix/migrations/preview` - returns detected migration files, SQL summaries, and risk tags.
+- `POST /api/dev/fix/migrations/apply` - applies migration SQL (or dry-run) using a Supabase RPC function.
+  - Request supports `confirm_destructive` for destructive SQL operations.
+
+Migration apply is guarded by env vars:
+
+- `DEV_AGENT_DB_AUTO_APPLY_ENABLED` - must be `1/true/yes` to allow apply endpoint.
+- `DEV_AGENT_DB_APPLY_REQUIRES_CONFIRMATION` - when enabled, request must include `confirm: true`.
+- `DEV_AGENT_DB_APPLY_TARGET` - target environment label (e.g. `dev`, `staging`, `prod`).
+- `DEV_AGENT_DB_APPLY_TOKEN` - optional shared token expected in `x-dev-agent-db-token` header.
+- `DEV_AGENT_DB_APPLY_RPC_NAME` / `DEV_AGENT_DB_APPLY_RPC_ARG` - Supabase RPC function/arg used to execute SQL (defaults: `exec_sql` / `sql`).
+
+Safety behavior:
+
+- Destructive SQL (`drop table/column/constraint`, `truncate`) is never applied unless the request explicitly includes:
+  - `confirm: true`
+  - `confirm_destructive: true`
+- If apply fails, response now includes `rollback_guidance` and the backend logs/posts rollback guidance for operators.
+
+### Staging preview integration (Phase D1)
+
+After verify succeeds and the branch is pushed, the workflow can trigger a staging/preview deployment and capture a preview URL.
+
+- `DEV_AGENT_STAGING_DEPLOY_COMMAND` - optional shell command run from cloned repo after push.
+  - Placeholders: `{repo_path}`, `{branch}`, `{branch_slug}`
+- `DEV_AGENT_STAGING_URL_TEMPLATE` - optional URL template for predictable preview hosts.
+  - Placeholders: `{branch}` and `{branch_name}`
+  - Example: `https://{branch}.phwb.singforhope.org`
+
+Behavior:
+
+- If either value is configured, the workflow logs/publishes staging state:
+  - `staging_ready` (no DB pending)
+  - `staging_ready_db_pending` (migration still pending)
+- Preview URL is written to `phwb_dev_logs` and bug comments as workflow-state messages.
+- If not configured, flow continues with existing `ready_for_pr` behavior.
+
+### Staging-first primary handoff (Phase D2)
+
+The workflow supports staging-first delivery:
+
+- `DEV_AGENT_PR_MODE=after_staging_approval` (default):
+  - when staging URL is available, the workflow posts staging handoff and defers PR creation.
+- `DEV_AGENT_PR_MODE=parallel_draft`:
+  - creates PR immediately in parallel; PR is created as draft by default when staging URL exists.
+- `DEV_AGENT_PR_DRAFT_ON_PARALLEL=1`:
+  - keeps parallel PR as draft (set to `0` to create normal PR).
+
+Output behavior:
+
+- Workflow result and bug comments now prioritize staging URL when present.
+- `fully_complete` is only set when PR exists and DB requirements are satisfied.
+
+### QA policy alignment (Phase F1)
+
+Recommended QA operating model:
+
+- **Edited-file fast gate**: keep `verify_fix` as the quick stability gate (`edited_only` by default in noisy repos).
+- **Outcome-based final QA**: validate the requested behavior on the staging preview for the affected workflow.
+- **DB-aware QA**: treat DB-pending states as not QA-passable until migration status is confirmed/applied.
+
+In short: file-scoped verify for speed, staging outcome validation for release confidence.
+
 ## Test repo flow (branch + PR, no LLM)
 
 To run the full pipeline up to **creating a branch and PR** without the LLM (quick, ~1–2 min):
