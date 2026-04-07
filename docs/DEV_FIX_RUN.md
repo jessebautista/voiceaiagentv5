@@ -152,12 +152,18 @@ After verify succeeds and the branch is pushed, the workflow can trigger a stagi
 - `DEV_AGENT_STAGING_URL_TEMPLATE` - optional URL template for predictable preview hosts.
   - Placeholders: `{branch}` and `{branch_name}`
   - Example: `https://{branch}.phwb.singforhope.org`
+- `DEV_AGENT_VERCEL_PREVIEW_ENABLED=1` - enable Vercel API-based preview lookup by branch.
+- `DEV_AGENT_VERCEL_TOKEN` - Vercel API token used for deployment lookup.
+- `DEV_AGENT_VERCEL_PROJECT_ID` - Vercel project ID for the PHWB frontend.
+- `DEV_AGENT_VERCEL_TEAM_ID` - optional Vercel team ID.
+- `DEV_AGENT_VERCEL_LOOKBACK_MINUTES` - lookup window for READY preview deployments (default `240`).
 
 Behavior:
 
 - If either value is configured, the workflow logs/publishes staging state:
   - `staging_ready` (no DB pending)
   - `staging_ready_db_pending` (migration still pending)
+- If URL template/command is not set, but Vercel lookup is enabled and configured, the workflow attempts to resolve preview URL from Vercel deployments for the pushed branch.
 - Preview URL is written to `phwb_dev_logs` and bug comments as workflow-state messages.
 - If not configured, flow continues with existing `ready_for_pr` behavior.
 

@@ -1,12 +1,14 @@
 from temporalio import activity
 import os
 import re
+import json
 import socket
 import tempfile
 import subprocess
 import shutil
 import logging
 import time
+from urllib import parse, request
 from pydantic import BaseModel
 from typing import Tuple, Dict, Any, Optional, List
 
@@ -1943,6 +1945,102 @@ def _sanitize_branch_for_subdomain(branch_name: str) -> str:
     return value or "preview"
 
 
+def _normalize_branch_for_match(branch_name: str) -> str:
+    return (branch_name or "").strip().lower()
+
+
+def _extract_vercel_preview_url_for_branch(
+    *,
+    branch_name: str,
+    project_id: str,
+    token: str,
+    team_id: Optional[str] = None,
+    lookback_minutes: int = 240,
+) -> Optional[str]:
+    """
+    Query Vercel deployments and return latest READY preview URL for branch.
+    """
+    if not branch_name or not project_id or not token:
+        return None
+
+    query: Dict[str, str] = {
+        "projectId": project_id,
+        "state": "READY",
+        "target": "preview",
+        "limit": "50",
+    }
+    if team_id:
+        query["teamId"] = team_id
+    url = "https://api.vercel.com/v6/deployments?" + parse.urlencode(query)
+    req = request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    with request.urlopen(req, timeout=20) as resp:
+        raw = resp.read().decode("utf-8", errors="replace")
+    payload = json.loads(raw or "{}")
+    deployments = payload.get("deployments") if isinstance(payload, dict) else None
+    if not isinstance(deployments, list):
+        return None
+
+    now_ms = int(time.time() * 1000)
+    max_age_ms = max(5, lookback_minutes) * 60 * 1000
+    target_branch = _normalize_branch_for_match(branch_name)
+    target_slug = _normalize_branch_for_match(_sanitize_branch_for_subdomain(branch_name))
+    selected: Optional[Dict[str, Any]] = None
+
+    for dep in deployments:
+        if not isinstance(dep, dict):
+            continue
+        created_at = dep.get("createdAt")
+        if isinstance(created_at, (int, float)):
+            if (now_ms - int(created_at)) > max_age_ms:
+                continue
+
+        meta = dep.get("meta") if isinstance(dep.get("meta"), dict) else {}
+        branch_candidates = [
+            meta.get("githubCommitRef"),
+            meta.get("githubCommitBranch"),
+            meta.get("gitlabCommitRef"),
+            meta.get("bitbucketCommitRef"),
+            meta.get("gitCommitRef"),
+            meta.get("branch"),
+            meta.get("sourceBranch"),
+        ]
+        branch_candidates = [
+            _normalize_branch_for_match(str(x))
+            for x in branch_candidates
+            if isinstance(x, str) and x.strip()
+        ]
+        if target_branch not in branch_candidates and target_slug not in branch_candidates:
+            continue
+
+        state = str(dep.get("state") or "").upper()
+        if state != "READY":
+            continue
+
+        if selected is None:
+            selected = dep
+            continue
+        prev_created = int(selected.get("createdAt") or 0)
+        cur_created = int(dep.get("createdAt") or 0)
+        if cur_created > prev_created:
+            selected = dep
+
+    if not selected:
+        return None
+    dep_url = selected.get("url")
+    if isinstance(dep_url, str) and dep_url.strip():
+        resolved = dep_url.strip()
+        if not resolved.startswith("http://") and not resolved.startswith("https://"):
+            resolved = "https://" + resolved.lstrip("/")
+        return resolved
+    return None
+
+
 async def _deploy_and_capture_staging_preview(
     *,
     repo_path: str,
@@ -1960,11 +2058,21 @@ async def _deploy_and_capture_staging_preview(
     url_template = (os.getenv("DEV_AGENT_STAGING_URL_TEMPLATE") or "").strip()
     branch_slug = _sanitize_branch_for_subdomain(branch_name)
 
-    if not deploy_cmd and not url_template:
+    vercel_enabled = (os.getenv("DEV_AGENT_VERCEL_PREVIEW_ENABLED") or "").strip().lower() in ("1", "true", "yes")
+    vercel_token = (os.getenv("DEV_AGENT_VERCEL_TOKEN") or os.getenv("VERCEL_TOKEN") or "").strip()
+    vercel_project_id = (os.getenv("DEV_AGENT_VERCEL_PROJECT_ID") or "").strip()
+    vercel_team_id = (os.getenv("DEV_AGENT_VERCEL_TEAM_ID") or "").strip() or None
+    vercel_lookback_minutes = int((os.getenv("DEV_AGENT_VERCEL_LOOKBACK_MINUTES") or "240").strip() or "240")
+    can_use_vercel_lookup = bool(vercel_enabled and vercel_token and vercel_project_id)
+
+    if not deploy_cmd and not url_template and not can_use_vercel_lookup:
         await log_dev_event(
             bug_id,
             "staging_deploy",
-            "ℹ️ Staging deploy skipped (no deploy command or URL template configured).",
+            (
+                "ℹ️ Staging deploy skipped (no deploy command/url template configured, "
+                "and Vercel preview lookup is disabled or missing configuration)."
+            ),
             "info",
             workflow_id,
         )
@@ -2025,6 +2133,41 @@ async def _deploy_and_capture_staging_preview(
                 bug_id,
                 "staging_deploy",
                 "⚠️ Staging deploy command error; continuing with PR flow. " + str(e),
+                "warning",
+                workflow_id,
+            )
+
+    # Optional provider-level fallback: discover preview URL from Vercel deployments by branch.
+    if not resolved_url and can_use_vercel_lookup:
+        try:
+            resolved_url = _extract_vercel_preview_url_for_branch(
+                branch_name=branch_name,
+                project_id=vercel_project_id,
+                token=vercel_token,
+                team_id=vercel_team_id,
+                lookback_minutes=vercel_lookback_minutes,
+            )
+            if resolved_url:
+                await log_dev_event(
+                    bug_id,
+                    "staging_deploy",
+                    "✅ Vercel preview resolved for branch: " + resolved_url,
+                    "success",
+                    workflow_id,
+                )
+            else:
+                await log_dev_event(
+                    bug_id,
+                    "staging_deploy",
+                    "ℹ️ Vercel preview lookup found no READY deployment for this branch yet.",
+                    "info",
+                    workflow_id,
+                )
+        except Exception as e:
+            await log_dev_event(
+                bug_id,
+                "staging_deploy",
+                "⚠️ Vercel preview lookup failed; continuing with PR flow. " + str(e),
                 "warning",
                 workflow_id,
             )
