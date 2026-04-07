@@ -56,6 +56,16 @@ _AREA_ROUTE_PREFIXES: Dict[str, str] = {
     "production-managers": "src/routes/settings/production-managers/",
 }
 
+_AREA_DB_TABLES: Dict[str, str] = {
+    "artists": "phwb_artists",
+    "events": "phwb_events",
+    "venues": "phwb_venues",
+    "partners": "phwb_partners",
+    "programs": "phwb_programs",
+    "payroll": "phwb_payroll",
+    "reports": "phwb_reports",
+}
+
 
 def _is_ui_category(category: Optional[str]) -> bool:
     c = (category or "").strip().lower()
@@ -138,6 +148,127 @@ def _build_scope_hint(bug_data: DevActionInput) -> str:
         lines.append("- Keep edits narrowly scoped to files directly related to the reported bug.")
 
     return "## Scope constraints\n" + "\n".join(lines) + "\n"
+
+
+def _extract_candidate_columns(bug_data: DevActionInput) -> List[str]:
+    text = f"{bug_data.title} {bug_data.description or ''}"
+    candidates: List[str] = []
+    for m in re.finditer(r"\b([a-z][a-z0-9_]{2,})\b", text):
+        token = m.group(1).strip().lower()
+        if "_" not in token:
+            continue
+        if token.startswith("phwb_"):
+            continue
+        candidates.append(token)
+    seen: set[str] = set()
+    deduped: List[str] = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            deduped.append(c)
+    return deduped[:12]
+
+
+def _infer_candidate_tables(bug_data: DevActionInput) -> List[str]:
+    text = f"{bug_data.title} {bug_data.description or ''} {bug_data.path_hint or ''} {bug_data.module_hint or ''}"
+    tables: List[str] = []
+    for m in re.finditer(r"\b(phwb_[a-z0-9_]+)\b", text, re.IGNORECASE):
+        tables.append(m.group(1).lower())
+
+    area = _infer_primary_area(
+        bug_data.title,
+        bug_data.description,
+        module_hint=bug_data.module_hint,
+        path_hint=bug_data.path_hint,
+        labels=bug_data.labels,
+    )
+    if area and area in _AREA_DB_TABLES:
+        tables.append(_AREA_DB_TABLES[area])
+
+    seen: set[str] = set()
+    deduped: List[str] = []
+    for t in tables:
+        if t not in seen:
+            seen.add(t)
+            deduped.append(t)
+    return deduped[:6]
+
+
+def _looks_missing_table_error(msg: str) -> bool:
+    m = (msg or "").lower()
+    return (
+        "could not find the table" in m
+        or "relation" in m and "does not exist" in m
+        or "pgrst205" in m
+    )
+
+
+def _looks_missing_column_error(msg: str) -> bool:
+    m = (msg or "").lower()
+    return ("column" in m and "does not exist" in m) or "pgrst204" in m
+
+
+def _run_schema_audit(bug_data: DevActionInput) -> Dict[str, Any]:
+    """
+    Best-effort schema audit before coding:
+    - checks candidate tables inferred from bug metadata
+    - checks candidate snake_case columns (if any) against those tables
+    Never raises; returns structured findings.
+    """
+    from app.supabase_client import get_supabase_client
+
+    supabase = get_supabase_client("DEV_AGENT")
+    result: Dict[str, Any] = {
+        "tables_checked": [],
+        "tables_missing": [],
+        "columns_checked": [],
+        "columns_missing": [],
+        "errors": [],
+    }
+    if not supabase:
+        result["errors"].append("supabase_not_configured")
+        return result
+
+    tables = _infer_candidate_tables(bug_data)
+    columns = _extract_candidate_columns(bug_data)
+
+    existing_tables: List[str] = []
+    for table in tables:
+        result["tables_checked"].append(table)
+        try:
+            supabase.from_(table).select("*").limit(1).execute()
+            existing_tables.append(table)
+        except Exception as e:
+            msg = str(e)
+            if _looks_missing_table_error(msg):
+                result["tables_missing"].append(table)
+            else:
+                result["errors"].append(f"table_check:{table}:{msg[:140]}")
+
+    for table in existing_tables:
+        for col in columns:
+            result["columns_checked"].append(f"{table}.{col}")
+            try:
+                supabase.from_(table).select(col).limit(1).execute()
+            except Exception as e:
+                msg = str(e)
+                if _looks_missing_column_error(msg):
+                    result["columns_missing"].append(f"{table}.{col}")
+                elif _looks_missing_table_error(msg):
+                    result["tables_missing"].append(table)
+                else:
+                    result["errors"].append(f"column_check:{table}.{col}:{msg[:140]}")
+
+    # Dedupe lists
+    for key in ("tables_checked", "tables_missing", "columns_checked", "columns_missing", "errors"):
+        seen: set[str] = set()
+        deduped: List[str] = []
+        for item in result[key]:
+            if item not in seen:
+                seen.add(item)
+                deduped.append(item)
+        result[key] = deduped
+    return result
 
 
 def _infer_ticket_type(bug_data: DevActionInput) -> str:
@@ -486,7 +617,12 @@ async def setup_repository(payload: Dict[str, Any]) -> Tuple[str, str]:
 # Activity: Analyze & Code
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_dev_fix_instruction(repo_path: str, bug_data: DevActionInput, last_error: Optional[str]) -> str:
+def _build_dev_fix_instruction(
+    repo_path: str,
+    bug_data: DevActionInput,
+    last_error: Optional[str],
+    schema_audit: Optional[Dict[str, Any]] = None,
+) -> str:
     """
     Build the dev-fix instruction: repo context first, then a clear task with acceptance criteria.
     """
@@ -532,6 +668,16 @@ def _build_dev_fix_instruction(repo_path: str, bug_data: DevActionInput, last_er
         f"2. Make at least one concrete code change (use the write_file tool) that fixes or addresses the issue. Prefer a minimal, single-file change when possible.\n"
         f"3. Do not break the project: the change must pass the project's check (e.g. `bun run check` or `npm run check`).\n"
     )
+    if schema_audit:
+        task += (
+            "\n## DB schema audit (before coding)\n"
+            f"- Tables checked: {', '.join(schema_audit.get('tables_checked', [])) or '(none)'}\n"
+            f"- Missing tables: {', '.join(schema_audit.get('tables_missing', [])) or '(none)'}\n"
+            f"- Columns checked: {', '.join(schema_audit.get('columns_checked', [])) or '(none)'}\n"
+            f"- Missing columns: {', '.join(schema_audit.get('columns_missing', [])) or '(none)'}\n"
+            f"- Audit errors: {', '.join(schema_audit.get('errors', [])) or '(none)'}\n"
+            "- If required table/column is missing, add a migration before claiming completion.\n"
+        )
     task += "\n" + _build_scope_hint(bug_data)
     if last_error:
         task += (
@@ -571,7 +717,21 @@ async def analyze_and_code(config: Dict[str, Any]) -> None:
         workflow_id,
     )
 
-    prompt = _build_dev_fix_instruction(repo_path, bug_data, last_error)
+    schema_audit = _run_schema_audit(bug_data)
+    await log_dev_event(
+        bug_data.bug_id,
+        "analyze_and_code",
+        (
+            "🧪 Schema audit: "
+            f"tables_checked={len(schema_audit.get('tables_checked', []))} | "
+            f"tables_missing={','.join(schema_audit.get('tables_missing', []) or ['(none)'])} | "
+            f"columns_missing={','.join(schema_audit.get('columns_missing', []) or ['(none)'])}"
+        ),
+        "info",
+        workflow_id,
+    )
+
+    prompt = _build_dev_fix_instruction(repo_path, bug_data, last_error, schema_audit=schema_audit)
     if last_error:
         await log_dev_event(bug_data.bug_id, "analyze_and_code", "🔁 Retry: using previous verification error as context.", "warning", workflow_id)
         logging.info("[analyze_and_code] Retry with last_error context")

@@ -109,6 +109,16 @@ Related toggles:
 
 Runtime logs now include active verify mode at the start of each `verify_fix` run.
 
+### Schema audit before coding
+
+`analyze_and_code` now performs a best-effort DB schema audit before prompting the coder:
+
+- infers candidate table(s) from bug context (e.g., Events -> `phwb_events`)
+- scans snake_case field candidates in the ticket text
+- probes table/column existence via Supabase and logs findings
+
+Audit output is written to `phwb_dev_logs` and injected into the coding prompt as a "DB schema audit" section so the agent can decide migration requirements earlier.
+
 ### DB migration preview/apply APIs
 
 The backend provides migration APIs for confirmation flow:
