@@ -361,12 +361,30 @@ async def log_dev_event(
         logging.warning(f"log_dev_event failed: {e}")
 
 
+def _looks_like_migration_file(path: str) -> bool:
+    """Return True if a path looks like a SQL migration file."""
+    p = path.replace("\\", "/").lstrip("./").lower()
+    if not p.endswith(".sql"):
+        return False
+    if p.startswith("migrations/"):
+        return True
+    if p.startswith("supabase/migrations/"):
+        return True
+    if p.startswith("db/migrations/"):
+        return True
+    if p.startswith("database/migrations/"):
+        return True
+    if p.startswith("prisma/migrations/"):
+        return True
+    return "/migrations/" in p
+
+
 def _detect_migration_files(modified_files: List[str]) -> List[str]:
     """Return changed SQL migration files."""
     return [
         p.replace("\\", "/").lstrip("./")
         for p in modified_files
-        if p.replace("\\", "/").startswith("migrations/") and p.lower().endswith(".sql")
+        if _looks_like_migration_file(p)
     ]
 
 
@@ -411,7 +429,10 @@ def _functional_completeness_warnings(
     backend_touched = any(_is_backend_path(p) for p in modified_files)
     warnings: List[str] = []
 
-    if "API/Backend" in impacted and not backend_touched:
+    # Reduce noisy warnings: DB+UI tickets may legitimately not touch backend files
+    # when schema change is captured via migration and UI reads existing data paths.
+    skip_backend_warning = bool(contract.get("requires_migration") and migrations)
+    if "API/Backend" in impacted and not backend_touched and not skip_backend_warning:
         warnings.append(
             "Implementation contract expects API/Backend work, but modified files appear UI-only."
         )
@@ -452,7 +473,8 @@ def _functional_completeness_failures(
     backend_touched = any(_is_backend_path(p) for p in modified_files)
 
     failures: List[str] = []
-    if "API/Backend" in impacted and not backend_touched:
+    skip_backend_failure = bool(contract.get("requires_migration") and migrations)
+    if "API/Backend" in impacted and not backend_touched and not skip_backend_failure:
         failures.append("Expected API/Backend layer changes were not implemented.")
     if "UI" in impacted and not ui_touched:
         failures.append("Expected UI layer changes were not implemented.")
@@ -785,12 +807,77 @@ def _run_cmd(
         return (-1, "", "Command not found (e.g. bun or npm not in PATH)")
 
 
+def _git_default_base_ref(repo_path: str) -> str:
+    """
+    Resolve a reliable base ref for branch-aware diffs.
+    Prefers origin/HEAD, then origin/main, then origin/master.
+    """
+    code, out, _ = _run_cmd(
+        ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        repo_path,
+        timeout_sec=10,
+    )
+    if code == 0 and (out or "").strip():
+        return (out or "").strip()
+
+    for candidate in ("origin/main", "origin/master"):
+        verify_code, _, _ = _run_cmd(
+            ["git", "show-ref", "--verify", f"refs/remotes/{candidate}"],
+            repo_path,
+            timeout_sec=10,
+        )
+        if verify_code == 0:
+            return candidate
+    return "origin/main"
+
+
+def _parse_git_path_list(raw: str) -> List[str]:
+    return [
+        line.strip().replace("\\", "/").lstrip("./")
+        for line in (raw or "").splitlines()
+        if line.strip()
+    ]
+
+
 def _get_modified_files(repo_path: str) -> List[str]:
-    """Return list of file paths (relative to repo root) changed since HEAD."""
-    code, out, _ = _run_cmd(["git", "diff", "--name-only", "HEAD"], repo_path, timeout_sec=10)
-    if code != 0:
-        return []
-    return [line.strip().replace("\\", "/").lstrip("./") for line in (out or "").splitlines() if line.strip()]
+    """
+    Return changed paths relative to repo root with branch-aware coverage.
+
+    Sources (union):
+    1) Working tree/index changes vs HEAD.
+    2) Untracked files (important for newly-created migrations).
+    3) Branch diff vs base (origin/HEAD -> main/master fallback).
+    """
+    files: List[str] = []
+
+    code_head, out_head, _ = _run_cmd(["git", "diff", "--name-only", "HEAD"], repo_path, timeout_sec=10)
+    if code_head == 0:
+        files.extend(_parse_git_path_list(out_head))
+
+    code_untracked, out_untracked, _ = _run_cmd(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        repo_path,
+        timeout_sec=10,
+    )
+    if code_untracked == 0:
+        files.extend(_parse_git_path_list(out_untracked))
+
+    base_ref = _git_default_base_ref(repo_path)
+    code_base, out_base, _ = _run_cmd(
+        ["git", "diff", "--name-only", f"{base_ref}...HEAD"],
+        repo_path,
+        timeout_sec=10,
+    )
+    if code_base == 0:
+        files.extend(_parse_git_path_list(out_base))
+
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for p in files:
+        if p and p not in seen:
+            seen.add(p)
+            deduped.append(p)
+    return deduped
 
 
 def _is_ui_path(path: str) -> bool:
@@ -1147,22 +1234,25 @@ async def verify_fix(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         verify_mode = "hybrid"
     enforce_completeness = (os.getenv("DEV_AGENT_VERIFY_ENFORCE_COMPLETENESS") or "").strip().lower() in ("1", "true", "yes")
     enforce_schema_refs = (os.getenv("DEV_AGENT_VERIFY_ENFORCE_SCHEMA_REFS") or "").strip().lower() in ("1", "true", "yes")
+    enforce_db_migration = (os.getenv("DEV_AGENT_VERIFY_ENFORCE_DB_MIGRATION") or "1").strip().lower() in ("1", "true", "yes")
     await log_dev_event(
         bug_id,
         "verify_fix",
         (
             f"ℹ️ Verify mode: `{verify_mode}` "
             f"(enforce_completeness={'on' if enforce_completeness else 'off'}, "
-            f"enforce_schema_refs={'on' if enforce_schema_refs else 'off'})"
+            f"enforce_schema_refs={'on' if enforce_schema_refs else 'off'}, "
+            f"enforce_db_migration={'on' if enforce_db_migration else 'off'})"
         ),
         "info",
         workflow_id,
     )
     logging.info(
-        "[verify_fix] Active verify mode: %s | enforce_completeness=%s | enforce_schema_refs=%s",
+        "[verify_fix] Active verify mode: %s | enforce_completeness=%s | enforce_schema_refs=%s | enforce_db_migration=%s",
         verify_mode,
         enforce_completeness,
         enforce_schema_refs,
+        enforce_db_migration,
     )
 
     try:
@@ -1207,6 +1297,22 @@ async def verify_fix(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
             )
             logging.warning("[verify_fix] Functional completeness warnings: %s", warn_text)
         completeness_failures = _functional_completeness_failures(modified, bug_data)
+        contract = _build_implementation_contract(bug_data) if bug_data else None
+        requires_migration = bool(contract and contract.get("requires_migration"))
+        if enforce_db_migration and requires_migration and not db_meta["migration_files"]:
+            missing_msg = (
+                "DB migration enforcement failed: implementation contract requires DB/schema changes, "
+                "but no migration file was detected in this bug branch context "
+                "(working tree + untracked files + base-branch diff)."
+            )
+            await log_dev_event(
+                bug_id,
+                "verify_fix",
+                "❌ " + missing_msg[:1800],
+                "error",
+                workflow_id,
+            )
+            return False, missing_msg
         if enforce_completeness and completeness_failures:
             fail_text = " | ".join(completeness_failures)
             await log_dev_event(
@@ -1967,7 +2073,7 @@ def _build_structured_run_summary(
             continue
         step = str(row.get("step") or "")
         msg = str(row.get("message") or "")
-        if not effective_staging_url:
+        if step == "staging_deploy" and not effective_staging_url:
             found_url = _extract_first_url(msg)
             if found_url:
                 effective_staging_url = found_url

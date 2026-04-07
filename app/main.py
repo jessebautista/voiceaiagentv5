@@ -4,6 +4,9 @@
 
 import os
 import re
+import hashlib
+from datetime import datetime, timedelta, timezone
+from threading import Lock
 from pathlib import Path
 
 # Load .env from project root so OPENAI_API_KEY (and other vars) are set before the agent is imported
@@ -106,6 +109,11 @@ class MigrationApplyRequest(BaseModel):
     dry_run: bool = False
 
 
+_DB_APPLY_GUARD_LOCK = Lock()
+_DB_APPLY_RECENT_KEYS: Dict[str, datetime] = {}
+_DB_APPLY_GUARD_TTL_SECONDS = 120
+
+
 def _enrich_bug_scope_hints(payload: dict) -> dict:
     """
     Best-effort enrichment for non-dev authored bug tickets.
@@ -201,7 +209,18 @@ def _extract_migration_files_from_logs(log_rows: List[dict]) -> List[str]:
     deduped: List[str] = []
     for f in files:
         norm = f.replace("\\", "/").lstrip("./")
-        if norm and norm not in seen and norm.startswith("migrations/") and norm.endswith(".sql"):
+        if (
+            norm
+            and norm not in seen
+            and norm.endswith(".sql")
+            and (
+                norm.startswith("migrations/")
+                or norm.startswith("supabase/migrations/")
+                or norm.startswith("db/migrations/")
+                or norm.startswith("database/migrations/")
+                or "/migrations/" in norm
+            )
+        ):
             seen.add(norm)
             deduped.append(norm)
     return deduped[:100]
@@ -334,6 +353,62 @@ def _rollback_guidance(failed_files: List[str], target: str) -> List[str]:
         "Restore from backup/snapshot only when forward-fix is not viable and impact is confirmed.",
         "Re-run `/api/dev/fix/migrations/preview` and execute a dry-run before re-attempting apply.",
     ]
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _make_db_apply_request_key(
+    *,
+    bug_id: int,
+    workflow_id: Optional[str],
+    target: str,
+    dry_run: bool,
+    migration_files: List[str],
+) -> str:
+    base = f"{bug_id}|{workflow_id or ''}|{target}|{str(dry_run).lower()}|{','.join(sorted(migration_files))}"
+    digest = hashlib.sha256(base.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return f"dbapply:{digest}"
+
+
+def _mark_db_apply_key_recent(key: str) -> None:
+    now = _utcnow()
+    with _DB_APPLY_GUARD_LOCK:
+        # prune expired keys first
+        expired = [k for k, ts in _DB_APPLY_RECENT_KEYS.items() if (now - ts).total_seconds() > _DB_APPLY_GUARD_TTL_SECONDS]
+        for k in expired:
+            _DB_APPLY_RECENT_KEYS.pop(k, None)
+        _DB_APPLY_RECENT_KEYS[key] = now
+
+
+def _is_db_apply_key_recent(key: str) -> bool:
+    now = _utcnow()
+    with _DB_APPLY_GUARD_LOCK:
+        ts = _DB_APPLY_RECENT_KEYS.get(key)
+        if not ts:
+            return False
+        if (now - ts).total_seconds() > _DB_APPLY_GUARD_TTL_SECONDS:
+            _DB_APPLY_RECENT_KEYS.pop(key, None)
+            return False
+        return True
 
 
 def _apply_sql_via_rpc(supabase: Any, sql: str) -> None:
@@ -702,6 +777,32 @@ async def dev_fix_migrations_apply(
     migration_files = _extract_migration_files_from_logs(rows)
     migration_files = sorted(migration_files)
     db_changes_detected = len(migration_files) > 0
+    request_key = _make_db_apply_request_key(
+        bug_id=body.bug_id,
+        workflow_id=body.workflow_id,
+        target=apply_target,
+        dry_run=body.dry_run,
+        migration_files=migration_files,
+    )
+
+    # In-process debounce (covers fast double-clicks/retries).
+    if _is_db_apply_key_recent(request_key):
+        return {
+            "bug_id": body.bug_id,
+            "workflow_id": body.workflow_id,
+            "target": apply_target,
+            "dry_run": body.dry_run,
+            "branch_name": branch_name or None,
+            "db_changes_detected": db_changes_detected,
+            "migration_files": migration_files,
+            "applied": [],
+            "failed": [],
+            "success": False,
+            "warnings": ["Duplicate DB apply request ignored (recent duplicate)."],
+            "rollback_guidance": [],
+            "duplicate_request_ignored": True,
+            "request_key": request_key,
+        }
 
     _insert_dev_log(
         supabase,
@@ -709,6 +810,7 @@ async def dev_fix_migrations_apply(
         step="db_apply",
         message=(
             f"🧪 DB apply requested (target={apply_target}, dry_run={str(body.dry_run).lower()}). "
+            f"request_key={request_key} | "
             f"migrations={','.join(migration_files[:10]) if migration_files else '(none)'}"
         ),
         level="info",
@@ -728,9 +830,11 @@ async def dev_fix_migrations_apply(
         "success": True,
         "warnings": [],
         "rollback_guidance": [],
+        "request_key": request_key,
     }
 
     if not db_changes_detected:
+        _mark_db_apply_key_recent(request_key)
         _insert_dev_log(
             supabase,
             bug_id=body.bug_id,
@@ -743,6 +847,32 @@ async def dev_fix_migrations_apply(
 
     if not branch_name:
         raise HTTPException(status_code=400, detail="Branch name not found. Provide branch_name or run setup logs first.")
+
+    # Cross-request dedupe by checking recent "requested" logs for same key.
+    recent_duplicate = False
+    now_utc = _utcnow()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("step") or "") != "db_apply":
+            continue
+        msg = str(row.get("message") or "")
+        if f"request_key={request_key}" not in msg:
+            continue
+        if "🧪 DB apply requested" not in msg:
+            continue
+        created = _parse_iso_datetime(row.get("created_at"))
+        if created and (now_utc - created) <= timedelta(minutes=10):
+            recent_duplicate = True
+            break
+    if recent_duplicate:
+        _mark_db_apply_key_recent(request_key)
+        return {
+            **result,
+            "success": False,
+            "warnings": ["Duplicate DB apply request ignored (recent matching request_key)."],
+            "duplicate_request_ignored": True,
+        }
 
     github_token = (os.getenv("DEV_AGENT_GITHUB_ACCESS_TOKEN") or "").strip()
     repo_url = (os.getenv("DEV_AGENT_GITHUB_REPO_URL") or "").strip()
@@ -838,6 +968,7 @@ async def dev_fix_migrations_apply(
     result["post_apply_checks"] = post_apply_checks
 
     if result["success"]:
+        _mark_db_apply_key_recent(request_key)
         _insert_dev_log(
             supabase,
             bug_id=body.bug_id,
@@ -885,8 +1016,18 @@ async def dev_fix_migrations_apply(
                 is_internal=False,
             )
     else:
+        _mark_db_apply_key_recent(request_key)
         failed_files = [str((f or {}).get("file") or "") for f in result["failed"] if isinstance(f, dict)]
         result["rollback_guidance"] = _rollback_guidance(failed_files, apply_target)
+        detailed_errors: List[str] = []
+        for failed_entry in result["failed"]:
+            if not isinstance(failed_entry, dict):
+                continue
+            file_name = str(failed_entry.get("file") or "(unknown)")
+            error_text = str(failed_entry.get("error") or "").replace("\n", " ").strip()
+            if not error_text:
+                continue
+            detailed_errors.append(f"{file_name}: {error_text[:500]}")
         _insert_dev_log(
             supabase,
             bug_id=body.bug_id,
@@ -906,15 +1047,50 @@ async def dev_fix_migrations_apply(
             level="warning",
             workflow_id=body.workflow_id,
         )
-        _insert_bug_comment(
-            supabase,
-            bug_id=body.bug_id,
-            content=(
-                "⚠️ DB migration apply failed.\n\n"
-                + "\n".join(f"- {line}" for line in result["rollback_guidance"])
-            ),
-            is_internal=False,
+        if detailed_errors:
+            _insert_dev_log(
+                supabase,
+                bug_id=body.bug_id,
+                step="db_apply",
+                message="DB apply error details: " + " | ".join(detailed_errors[:3]),
+                level="error",
+                workflow_id=body.workflow_id,
+            )
+        failure_marker = f"failure_comment_posted request_key={request_key}"
+        comment_already_posted = any(
+            isinstance(r, dict)
+            and str(r.get("step") or "") == "db_apply"
+            and failure_marker in str(r.get("message") or "")
+            for r in rows
         )
+        if comment_already_posted:
+            _insert_dev_log(
+                supabase,
+                bug_id=body.bug_id,
+                step="db_apply",
+                message=f"ℹ️ Duplicate failure comment skipped for request_key={request_key}.",
+                level="info",
+                workflow_id=body.workflow_id,
+            )
+        else:
+            _insert_bug_comment(
+                supabase,
+                bug_id=body.bug_id,
+                content=(
+                    "⚠️ DB migration apply failed.\n\n"
+                    + ("**Execution errors:**\n" + "\n".join(f"- {line}" for line in detailed_errors[:3]) + "\n\n" if detailed_errors else "")
+                    + "\n".join(f"- {line}" for line in result["rollback_guidance"])
+                ),
+                is_internal=False,
+            )
+            _insert_dev_log(
+                supabase,
+                bug_id=body.bug_id,
+                step="db_apply",
+                message=f"🧾 {failure_marker}",
+                level="info",
+                workflow_id=body.workflow_id,
+            )
         if not body.dry_run:
             _insert_dev_log(
                 supabase,

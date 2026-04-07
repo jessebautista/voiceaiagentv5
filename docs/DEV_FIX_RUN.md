@@ -106,6 +106,7 @@ Related toggles:
 - `DEV_AGENT_VERIFY_STRICT_OUTSIDE_MODIFIED=1` - in hybrid mode, fail when new errors are outside modified files.
 - `DEV_AGENT_VERIFY_ENFORCE_COMPLETENESS=1` - promote critical completeness checks (missing required UI/API/DB-migration layers) to blocking failures.
 - `DEV_AGENT_VERIFY_ENFORCE_SCHEMA_REFS=1` - fail verify when output shows missing schema objects (missing table/relation/schema cache).
+- `DEV_AGENT_VERIFY_ENFORCE_DB_MIGRATION=1` - when contract requires DB/schema changes, fail verify unless a migration file is detected from bug-branch context (working tree + untracked + base-branch diff).
 
 Runtime logs now include active verify mode at the start of each `verify_fix` run.
 
