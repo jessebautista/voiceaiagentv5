@@ -2315,6 +2315,12 @@ def _build_structured_run_summary(
 
     if latest_state in ("code_complete_db_pending", "staging_ready_db_pending"):
         migration_apply_status = "pending_apply"
+    elif migration_files and migration_apply_status in ("unknown", "not_required"):
+        # If migration files exist for this run, treat status as pending until an explicit
+        # successful/failed apply signal is logged.
+        migration_apply_status = "pending_apply"
+    elif not migration_files and migration_apply_status == "unknown":
+        migration_apply_status = "not_required"
 
     validation_result = "not_started"
     if latest_state == "staging_validated":

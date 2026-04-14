@@ -109,6 +109,12 @@ class MigrationApplyRequest(BaseModel):
     dry_run: bool = False
 
 
+class StagingValidatedRequest(BaseModel):
+    """Request body for /api/dev/fix/staging/validated."""
+    bug_id: int
+    workflow_id: Optional[str] = None
+
+
 _DB_APPLY_GUARD_LOCK = Lock()
 _DB_APPLY_RECENT_KEYS: Dict[str, datetime] = {}
 _DB_APPLY_GUARD_TTL_SECONDS = 120
@@ -233,6 +239,35 @@ def _parse_repo_name(repo_url: str) -> Optional[str]:
     if name.endswith(".git"):
         name = name[:-4]
     return name or None
+
+
+def _extract_pr_url_from_logs(log_rows: List[dict]) -> Optional[str]:
+    for row in log_rows:
+        msg = str(row.get("message") or "")
+        m = re.search(r"https://github\\.com/[^\\s)]+/pull/\\d+", msg)
+        if m:
+            return m.group(0)
+    return None
+
+
+def _workflow_contract_requires_db(log_rows: List[dict]) -> bool:
+    for row in log_rows:
+        if str(row.get("step") or "") != "analyze_and_code":
+            continue
+        msg = str(row.get("message") or "")
+        if "Implementation contract:" in msg and "migration_required=yes" in msg:
+            return True
+    return False
+
+
+def _has_successful_db_apply(log_rows: List[dict]) -> bool:
+    for row in log_rows:
+        if str(row.get("step") or "") != "db_apply":
+            continue
+        msg = str(row.get("message") or "").lower()
+        if "db apply completed. applied=" in msg and "failed=0" in msg:
+            return True
+    return False
 
 
 def _summarize_migration_sql(sql: str) -> Dict[str, Any]:
@@ -648,6 +683,150 @@ async def start_dev_fix(body: BugFixRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/dev/fix/staging/validated")
+async def dev_fix_staging_validated(body: StagingValidatedRequest):
+    """
+    Promote a staging-validated run in staging-first mode:
+    - create PR (if deferred and missing)
+    - advance workflow state toward fully_complete when requirements are satisfied
+    """
+    from app.supabase_client import get_supabase_client
+
+    supabase = get_supabase_client("DEV_AGENT")
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Supabase (DEV_AGENT) is not configured.")
+
+    try:
+        q = (
+            supabase.from_("phwb_dev_logs")
+            .select("step,message,workflow_id,created_at")
+            .eq("bug_id", body.bug_id)
+            .order("created_at", desc=True)
+            .limit(400)
+        )
+        if body.workflow_id:
+            q = q.eq("workflow_id", body.workflow_id)
+        res = q.execute()
+        rows = getattr(res, "data", None) or []
+    except Exception as e:
+        logger.error("Failed to query dev logs for staging validation finalize: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to read dev logs.")
+
+    latest_state = _latest_workflow_state_from_logs(rows)
+    branch_name = _extract_branch_from_logs(rows)
+    pr_url = _extract_pr_url_from_logs(rows)
+    pr_created = False
+
+    pr_mode = (os.getenv("DEV_AGENT_PR_MODE") or "after_staging_approval").strip().lower()
+    should_create_pr = pr_mode in ("after_staging_approval", "after_staging_validation")
+    if should_create_pr and not pr_url:
+        github_token = (os.getenv("DEV_AGENT_GITHUB_ACCESS_TOKEN") or "").strip()
+        repo_url = (os.getenv("DEV_AGENT_GITHUB_REPO_URL") or "").strip()
+        repo_name = _parse_repo_name(repo_url)
+        if not branch_name:
+            raise HTTPException(status_code=400, detail="Cannot create PR: branch name not found in workflow logs.")
+        if not github_token or not repo_name:
+            raise HTTPException(status_code=503, detail="GitHub token/repo not configured for PR promotion.")
+        try:
+            from github import Github
+
+            gh = Github(github_token)
+            repo = gh.get_repo(repo_name)
+            repo_owner = repo_name.split("/", 1)[0]
+
+            # Reuse an existing open PR for this branch when present.
+            existing_prs = list(repo.get_pulls(state="open", head=f"{repo_owner}:{branch_name}", base="main"))
+            if existing_prs:
+                pr_url = existing_prs[0].html_url
+            else:
+                bug_title = f"Bug #{body.bug_id}"
+                bug_description = ""
+                try:
+                    bug_res = (
+                        supabase.from_("phwb_bugs")
+                        .select("title,description")
+                        .eq("id", body.bug_id)
+                        .maybe_single()
+                        .execute()
+                    )
+                    bug_row = getattr(bug_res, "data", None) or {}
+                    bug_title = str(bug_row.get("title") or bug_title)
+                    bug_description = str(bug_row.get("description") or "")
+                except Exception:
+                    pass
+
+                pr = repo.create_pull(
+                    title=f"Fix: {bug_title} (Bug #{body.bug_id})",
+                    body=f"Automated PR generated by DevAgent after staging approval for bug #{body.bug_id}.\n\n{bug_description}",
+                    head=branch_name,
+                    base="main",
+                    draft=False,
+                )
+                pr_url = pr.html_url
+                pr_created = True
+
+            _insert_dev_log(
+                supabase,
+                bug_id=body.bug_id,
+                step="create_pull_request",
+                message="✅ Step 4/5 follow-up: PR created after staging validation. PR: " + str(pr_url),
+                level="success",
+                workflow_id=body.workflow_id,
+            )
+            _insert_bug_comment(
+                supabase,
+                bug_id=body.bug_id,
+                content=f"✅ PR created after staging validation: {pr_url}",
+                is_internal=False,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to create PR after staging validation: {e}")
+
+    migration_files = _extract_migration_files_from_logs(rows)
+    db_pending = bool(migration_files) and not _has_successful_db_apply(rows)
+    finalized_state: Optional[str] = None
+    state_msg: Optional[str] = None
+    state_level = "info"
+
+    if latest_state == "staging_validated" and pr_url and not db_pending:
+        finalized_state = "fully_complete"
+        state_level = "success"
+        state_msg = "🔖 Workflow state → `fully_complete`. Staging validated, DB requirements satisfied, and PR is available."
+    elif latest_state == "staging_validated" and pr_url and db_pending:
+        finalized_state = "staging_validated"
+        state_msg = "🔖 Workflow state → `staging_validated`. Staging approved and PR is available; waiting DB migration apply before fully_complete."
+
+    if state_msg:
+        _insert_dev_log(
+            supabase,
+            bug_id=body.bug_id,
+            step="workflow_state",
+            message=state_msg,
+            level=state_level,
+            workflow_id=body.workflow_id,
+        )
+        _insert_bug_comment(
+            supabase,
+            bug_id=body.bug_id,
+            content=state_msg,
+            is_internal=False,
+        )
+
+    return {
+        "ok": True,
+        "bug_id": body.bug_id,
+        "workflow_id": body.workflow_id,
+        "latest_state": latest_state,
+        "finalized_state": finalized_state or latest_state,
+        "pr_url": pr_url,
+        "pr_created": pr_created,
+        "db_pending": db_pending,
+        "migration_files": migration_files,
+    }
+
+
 @app.post("/api/dev/fix/migrations/preview")
 async def dev_fix_migrations_preview(body: MigrationPreviewRequest):
     """
@@ -834,6 +1013,28 @@ async def dev_fix_migrations_apply(
     }
 
     if not db_changes_detected:
+        latest_state = _latest_workflow_state_from_logs(rows)
+        contract_requires_db = _workflow_contract_requires_db(rows)
+        if contract_requires_db and latest_state not in (
+            "staging_ready",
+            "ready_for_pr",
+            "staging_validated",
+            "fully_complete",
+            "staging_rejected",
+        ):
+            msg = (
+                "Migration files are not detected yet for this DB-required run. "
+                "Wait for verify/branch changes to finish, then apply again."
+            )
+            _insert_dev_log(
+                supabase,
+                bug_id=body.bug_id,
+                step="db_apply",
+                message="⚠️ " + msg,
+                level="warning",
+                workflow_id=body.workflow_id,
+            )
+            raise HTTPException(status_code=409, detail=msg)
         _mark_db_apply_key_recent(request_key)
         _insert_dev_log(
             supabase,
