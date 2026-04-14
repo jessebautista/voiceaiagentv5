@@ -157,6 +157,9 @@ After verify succeeds and the branch is pushed, the workflow can trigger a stagi
 - `DEV_AGENT_VERCEL_PROJECT_ID` - Vercel project ID for the PHWB frontend.
 - `DEV_AGENT_VERCEL_TEAM_ID` - optional Vercel team ID.
 - `DEV_AGENT_VERCEL_LOOKBACK_MINUTES` - lookup window for READY preview deployments (default `240`).
+- `DEV_AGENT_VERCEL_POLL_TIMEOUT_SEC` - max wait for READY preview before fallback/fail (default `300`).
+- `DEV_AGENT_VERCEL_POLL_INTERVAL_SEC` - polling interval for Vercel READY checks (default `10`).
+- `DEV_AGENT_STAGING_REQUIRE_READY_BEFORE_HANDOFF=1` - require READY staging URL before posting final handoff comment.
 
 Behavior:
 
@@ -164,6 +167,7 @@ Behavior:
   - `staging_ready` (no DB pending)
   - `staging_ready_db_pending` (migration still pending)
 - If URL template/command is not set, but Vercel lookup is enabled and configured, the workflow attempts to resolve preview URL from Vercel deployments for the pushed branch.
+- With polling enabled, workflow waits for Vercel preview to become READY before handoff (up to configured timeout).
 - Preview URL is written to `phwb_dev_logs` and bug comments as workflow-state messages.
 - If not configured, flow continues with existing `ready_for_pr` behavior.
 

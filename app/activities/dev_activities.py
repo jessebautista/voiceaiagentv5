@@ -2066,6 +2066,9 @@ async def _deploy_and_capture_staging_preview(
     vercel_project_id = (os.getenv("DEV_AGENT_VERCEL_PROJECT_ID") or "").strip()
     vercel_team_id = (os.getenv("DEV_AGENT_VERCEL_TEAM_ID") or "").strip() or None
     vercel_lookback_minutes = int((os.getenv("DEV_AGENT_VERCEL_LOOKBACK_MINUTES") or "240").strip() or "240")
+    vercel_poll_timeout_sec = int((os.getenv("DEV_AGENT_VERCEL_POLL_TIMEOUT_SEC") or "300").strip() or "300")
+    vercel_poll_interval_sec = int((os.getenv("DEV_AGENT_VERCEL_POLL_INTERVAL_SEC") or "10").strip() or "10")
+    require_staging_ready = (os.getenv("DEV_AGENT_STAGING_REQUIRE_READY_BEFORE_HANDOFF") or "1").strip().lower() in ("1", "true", "yes")
     can_use_vercel_lookup = bool(vercel_enabled and vercel_token and vercel_project_id)
 
     if not deploy_cmd and not url_template and not can_use_vercel_lookup:
@@ -2143,13 +2146,33 @@ async def _deploy_and_capture_staging_preview(
     # Optional provider-level fallback: discover preview URL from Vercel deployments by branch.
     if not resolved_url and can_use_vercel_lookup:
         try:
-            resolved_url = _extract_vercel_preview_url_for_branch(
-                branch_name=branch_name,
-                project_id=vercel_project_id,
-                token=vercel_token,
-                team_id=vercel_team_id,
-                lookback_minutes=vercel_lookback_minutes,
-            )
+            deadline = time.time() + max(10, vercel_poll_timeout_sec)
+            interval = max(3, vercel_poll_interval_sec)
+            attempts = 0
+            while not resolved_url and time.time() < deadline:
+                attempts += 1
+                resolved_url = _extract_vercel_preview_url_for_branch(
+                    branch_name=branch_name,
+                    project_id=vercel_project_id,
+                    token=vercel_token,
+                    team_id=vercel_team_id,
+                    lookback_minutes=vercel_lookback_minutes,
+                )
+                if resolved_url:
+                    break
+                # Log only every ~30s to avoid noisy stream.
+                if attempts == 1 or attempts % max(1, 30 // interval) == 0:
+                    await log_dev_event(
+                        bug_id,
+                        "staging_deploy",
+                        (
+                            "⏳ Waiting for Vercel preview to become READY "
+                            f"(branch={branch_name}, elapsed~{attempts * interval}s)"
+                        ),
+                        "info",
+                        workflow_id,
+                    )
+                time.sleep(interval)
             if resolved_url:
                 await log_dev_event(
                     bug_id,
@@ -2162,10 +2185,18 @@ async def _deploy_and_capture_staging_preview(
                 await log_dev_event(
                     bug_id,
                     "staging_deploy",
-                    "ℹ️ Vercel preview lookup found no READY deployment for this branch yet.",
-                    "info",
+                    (
+                        "⚠️ Vercel preview lookup found no READY deployment for this branch "
+                        f"within {max(10, vercel_poll_timeout_sec)}s."
+                    ),
+                    "warning",
                     workflow_id,
                 )
+                if require_staging_ready:
+                    raise RuntimeError(
+                        "Staging preview was not READY before handoff timeout. "
+                        "Configure a longer DEV_AGENT_VERCEL_POLL_TIMEOUT_SEC or check Vercel deployment health."
+                    )
         except Exception as e:
             await log_dev_event(
                 bug_id,
