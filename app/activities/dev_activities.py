@@ -8,7 +8,7 @@ import subprocess
 import shutil
 import logging
 import time
-from urllib import parse, request
+from urllib import parse
 from pydantic import BaseModel
 from typing import Tuple, Dict, Any, Optional, List
 
@@ -1972,16 +1972,19 @@ def _extract_vercel_preview_url_for_branch(
     if team_id:
         query["teamId"] = team_id
     url = "https://api.vercel.com/v6/deployments?" + parse.urlencode(query)
-    req = request.Request(
+    # Use httpx (already in requirements) for better TLS cert handling.
+    import httpx
+
+    resp = httpx.get(
         url,
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         },
+        timeout=20.0,
     )
-    with request.urlopen(req, timeout=20) as resp:
-        raw = resp.read().decode("utf-8", errors="replace")
-    payload = json.loads(raw or "{}")
+    resp.raise_for_status()
+    payload = resp.json() if resp.content else {}
     deployments = payload.get("deployments") if isinstance(payload, dict) else None
     if not isinstance(deployments, list):
         return None
