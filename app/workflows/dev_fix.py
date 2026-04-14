@@ -106,17 +106,31 @@ class DevFixWorkflow:
 
                 for attempt in range(max_attempts):
                     logging.info(f"[DevFix] Step 2/5: Analyze & code (attempt {attempt + 1}/{max_attempts})")
-                    await workflow.execute_activity(
-                        analyze_and_code,
-                        {
-                            "repo_path": repo_path,
-                            "bug_data": input_data.dict(),
-                            "last_error": last_error,
-                            "workflow_id": workflow_id,
-                        },
-                        start_to_close_timeout=timedelta(minutes=30),
-                        heartbeat_timeout=timedelta(minutes=5),
-                    )
+                    try:
+                        await workflow.execute_activity(
+                            analyze_and_code,
+                            {
+                                "repo_path": repo_path,
+                                "bug_data": input_data.dict(),
+                                "last_error": last_error,
+                                "workflow_id": workflow_id,
+                            },
+                            start_to_close_timeout=timedelta(minutes=30),
+                            heartbeat_timeout=timedelta(minutes=5),
+                        )
+                    except Exception as analyze_err:
+                        last_error = f"Analyze step failed: {analyze_err}"
+                        logging.warning(
+                            "[DevFix] Analyze failed attempt %s/%s: %s",
+                            attempt + 1,
+                            max_attempts,
+                            str(analyze_err)[:300],
+                        )
+                        if attempt < max_attempts - 1:
+                            continue
+                        raise Exception(
+                            f"Failed to analyze/code after {max_attempts} attempts. Last error: {last_error}"
+                        )
                     logging.info(f"[DevFix] Step 3/5: Verify fix (attempt {attempt + 1}/{max_attempts})")
                     success, error_output = await workflow.execute_activity(
                         verify_fix,

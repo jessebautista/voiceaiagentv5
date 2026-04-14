@@ -769,11 +769,33 @@ async def analyze_and_code(config: Dict[str, Any]) -> None:
             except Exception:
                 break
 
+    analyze_timeout_raw = (os.getenv("DEV_AGENT_ANALYZE_TIMEOUT_SEC") or "1200").strip()
+    try:
+        analyze_timeout_sec = max(120, int(analyze_timeout_raw))
+    except Exception:
+        analyze_timeout_sec = 1200
+
+    await log_dev_event(
+        bug_data.bug_id,
+        "analyze_and_code",
+        f"ℹ️ Analyze timeout budget: {analyze_timeout_sec}s",
+        "info",
+        workflow_id,
+    )
+
     heartbeat_task = asyncio.create_task(heartbeat_loop())
     try:
-        await run_dev_agent(repo_path, prompt)
+        await asyncio.wait_for(run_dev_agent(repo_path, prompt), timeout=analyze_timeout_sec)
         await log_dev_event(bug_data.bug_id, "analyze_and_code", "✅ Step 2/5 done. Agent finished writing code changes.", "success", workflow_id)
         logging.info("[analyze_and_code] Agent run complete")
+    except asyncio.TimeoutError:
+        timeout_msg = (
+            f"Analyze step timed out after {analyze_timeout_sec}s. "
+            "Retrying may recover transient model/tool hangs."
+        )
+        await log_dev_event(bug_data.bug_id, "analyze_and_code", "❌ " + timeout_msg, "error", workflow_id)
+        logging.warning("[analyze_and_code] %s", timeout_msg)
+        raise RuntimeError(timeout_msg)
     finally:
         heartbeat_task.cancel()
 
@@ -2265,12 +2287,18 @@ def _build_structured_run_summary(
                 m = re.search(r"Verify mode:\s*`([^`]+)`", msg)
                 if m:
                     verify_mode = m.group(1).strip()
-            if verify_result == "unknown":
-                lower = msg.lower()
-                if "project check passed" in lower or "e2e smoke passed" in lower:
+            lower = msg.lower()
+            if verify_result != "failed":
+                if (
+                    "project check passed" in lower
+                    or "e2e smoke passed" in lower
+                    or "step 3/5 done" in lower
+                    or "edited-only mode: no new errors in modified files" in lower
+                    or "bypassing: no new error diagnostics beyond baseline" in lower
+                ):
                     verify_result = "passed"
-                elif "verification failed" in lower or msg.startswith("❌"):
-                    verify_result = "failed"
+            if "verification failed" in lower or msg.startswith("❌") or str(row.get("level") or "") == "error":
+                verify_result = "failed"
             if not migration_files and "DB change metadata:" in msg and "migration_files=" in msg:
                 tail = msg.split("migration_files=", 1)[1].strip()
                 if tail != "(none)":

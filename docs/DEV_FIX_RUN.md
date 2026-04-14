@@ -88,6 +88,7 @@ You can tune model selection per node in the dev agent pipeline:
 - `DEV_AGENT_MODEL_PLANNER` – model used by planner node.
 - `DEV_AGENT_MODEL_ESCALATED` – stronger model used for coder/reviewer when retry context is detected.
 - `DEV_AGENT_MODEL_ESCALATE_ON_RETRY` – `1/true/yes` (default) enables auto-escalation on retry contexts.
+- `DEV_AGENT_ANALYZE_TIMEOUT_SEC` – max seconds for each `analyze_and_code` attempt before auto-fail/retry (default `1200`).
 
 If not set, all nodes use the current built-in default model.
 
