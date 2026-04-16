@@ -115,6 +115,13 @@ class StagingValidatedRequest(BaseModel):
     workflow_id: Optional[str] = None
 
 
+class ClarificationSubmitRequest(BaseModel):
+    """Request body for /api/dev/fix/clarification/submit."""
+    bug_id: int
+    workflow_id: str
+    answers: List[str] | str
+
+
 _DB_APPLY_GUARD_LOCK = Lock()
 _DB_APPLY_RECENT_KEYS: Dict[str, datetime] = {}
 _DB_APPLY_GUARD_TTL_SECONDS = 120
@@ -825,6 +832,56 @@ async def dev_fix_staging_validated(body: StagingValidatedRequest):
         "db_pending": db_pending,
         "migration_files": migration_files,
     }
+
+
+@app.post("/api/dev/fix/clarification/submit")
+async def dev_fix_submit_clarification(body: ClarificationSubmitRequest):
+    """Submit clarification answers and signal a waiting DevFix workflow."""
+    client = get_temporal_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Temporal client is not connected.")
+
+    answers: List[str]
+    if isinstance(body.answers, str):
+        s = body.answers.strip()
+        answers = [s] if s else []
+    else:
+        answers = [str(a).strip() for a in body.answers if str(a).strip()]
+    if not answers:
+        raise HTTPException(status_code=400, detail="At least one clarification answer is required.")
+
+    from app.workflows.dev_fix import DevFixWorkflow
+    try:
+        handle = client.get_workflow_handle(body.workflow_id)
+        await handle.signal(DevFixWorkflow.submit_clarification, {"answers": answers})
+    except Exception as e:
+        logger.error("Failed to signal clarification for workflow %s: %s", body.workflow_id, e)
+        raise HTTPException(status_code=500, detail="Failed to signal clarification. Is the workflow running?")
+
+    # Best-effort log/comment for UI traceability.
+    try:
+        from app.supabase_client import get_supabase_client
+
+        supabase = get_supabase_client("DEV_AGENT")
+        if supabase:
+            _insert_dev_log(
+                supabase,
+                bug_id=body.bug_id,
+                step="clarify_ticket",
+                message=f"📝 Clarification answers submitted ({len(answers)} item(s)); resuming workflow.",
+                level="info",
+                workflow_id=body.workflow_id,
+            )
+            _insert_bug_comment(
+                supabase,
+                bug_id=body.bug_id,
+                content=f"📝 Clarification answers submitted ({len(answers)} item(s)). Dev fix workflow resumed.",
+                is_internal=False,
+            )
+    except Exception as e:
+        logger.warning("Clarification submission log/comment failed: %s", e)
+
+    return {"status": "signaled", "workflow_id": body.workflow_id, "answers_count": len(answers)}
 
 
 @app.post("/api/dev/fix/migrations/preview")

@@ -41,6 +41,7 @@ from app.activities.email_activities import (
 from app.activities.dev_activities import (
     setup_repository,
     preflight_repository_check,
+    clarify_ticket,
     analyze_and_code,
     apply_trivial_test_change,
     verify_fix,
@@ -71,6 +72,7 @@ async def main():
             send_thank_you_message,
             setup_repository,
             preflight_repository_check,
+            clarify_ticket,
             analyze_and_code,
             apply_trivial_test_change,
             verify_fix,

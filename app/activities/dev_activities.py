@@ -32,6 +32,15 @@ class DevActionInput(BaseModel):
     labels: Optional[List[str]] = None
 
 
+class ClarificationResult(BaseModel):
+    ready_for_coding: bool
+    clarity_score: float
+    questions: List[Dict[str, Any]]
+    missing_fields: List[str]
+    clarified_brief: str
+    required_answers: int
+
+
 _AREA_KEYWORDS: Dict[str, tuple[str, ...]] = {
     "artists": ("artist", "artists"),
     "events": ("event", "events", "calendar", "schedule"),
@@ -711,6 +720,176 @@ def _build_dev_fix_instruction(
         )
 
     return f"{repo_prefix}{harness_guidance}---\n\n{task}"
+
+
+def _normalize_clarification_answers(raw: Any) -> List[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        text = raw.strip()
+        return [text] if text else []
+    if isinstance(raw, list):
+        out: List[str] = []
+        for item in raw:
+            s = str(item or "").strip()
+            if s:
+                out.append(s)
+        return out
+    if isinstance(raw, dict):
+        vals = raw.get("answers")
+        return _normalize_clarification_answers(vals)
+    return _normalize_clarification_answers(str(raw))
+
+
+def _build_clarification_questions(bug_data: DevActionInput) -> List[Dict[str, Any]]:
+    primary_area = _infer_primary_area(
+        bug_data.title,
+        bug_data.description,
+        module_hint=bug_data.module_hint,
+        path_hint=bug_data.path_hint,
+        labels=bug_data.labels,
+    )
+    area_option = (
+        f"Edit `{_AREA_ROUTE_PREFIXES.get(primary_area, 'src/routes/settings/')}` first"
+        if primary_area and _AREA_ROUTE_PREFIXES.get(primary_area)
+        else "Edit `src/routes/settings/` first"
+    )
+    return [
+        {
+            "id": "target_area",
+            "prompt": "Which area should be the primary target for this fix?",
+            "options": [
+                area_option,
+                "Edit shared component under `src/lib/components/`",
+                "Unsure - let planner choose from existing bug context",
+            ],
+        },
+        {
+            "id": "change_type",
+            "prompt": "What kind of sidebar change is expected?",
+            "options": [
+                "UI text/label/menu item updates",
+                "Layout or visual styling change",
+                "Behavior/state change (selection, expand/collapse, persistence)",
+            ],
+        },
+        {
+            "id": "acceptance",
+            "prompt": "Pick the best acceptance expectation for this run.",
+            "options": [
+                "Visible sidebar change should be obvious on staging",
+                "Behavior change should be testable after refresh/navigation",
+                "Both visible and behavior changes are expected",
+            ],
+        },
+        {
+            "id": "image_reference",
+            "prompt": "For image reference, should the planner use existing bug attachments or request a new one?",
+            "options": [
+                "Use existing bug attachments as the reference",
+                "Upload a new image reference",
+                "Skip image reference",
+            ],
+        },
+    ]
+
+
+def _clarity_assessment(
+    bug_data: DevActionInput,
+    answers: Optional[List[str]] = None,
+) -> ClarificationResult:
+    answers = [a for a in (answers or []) if a.strip()]
+    questions = _build_clarification_questions(bug_data)
+    required_answers = len(questions)
+    ready_for_coding = len(answers) >= required_answers
+    score = min(1.0, len(answers) / float(required_answers or 1))
+
+    missing: List[str] = []
+    if not ready_for_coding:
+        missing = [str(q.get("id") or "") for q in questions[len(answers):] if str(q.get("id") or "")]
+
+    brief_lines = [
+        f"Title: {bug_data.title}",
+        f"Description: {(bug_data.description or '').strip() or '(none)'}",
+    ]
+    if bug_data.path_hint:
+        brief_lines.append(f"Path hint: {bug_data.path_hint}")
+    if bug_data.module_hint:
+        brief_lines.append(f"Module hint: {bug_data.module_hint}")
+    if answers:
+        brief_lines.append("Clarification selections:")
+        brief_lines.extend([f"- {a}" for a in answers[:12]])
+
+    return ClarificationResult(
+        ready_for_coding=ready_for_coding,
+        clarity_score=round(score, 2),
+        questions=questions,
+        missing_fields=missing,
+        clarified_brief="\n".join(brief_lines),
+        required_answers=required_answers,
+    )
+
+
+@activity.defn
+async def clarify_ticket(config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Planner-like clarification gate before coding.
+    Produces targeted questions for vague tickets and logs awaiting_clarification state.
+    """
+    bug_data = DevActionInput(**config["bug_data"])
+    workflow_id = config.get("workflow_id")
+    answers = _normalize_clarification_answers(config.get("clarification_answers"))
+
+    result = _clarity_assessment(bug_data, answers=answers)
+    if result.ready_for_coding:
+        await log_dev_event(
+            bug_data.bug_id,
+            "clarify_ticket",
+            f"✅ Clarification check passed (score={result.clarity_score}). Proceeding to coding.",
+            "success",
+            workflow_id,
+        )
+    else:
+        await log_workflow_state(
+            bug_data.bug_id,
+            "awaiting_clarification",
+            "Ticket needs clarification before coding. Answer clarification questions in the Dev Agent panel.",
+            workflow_id=workflow_id,
+            post_comment=True,
+        )
+        question_lines: List[str] = []
+        for idx, q in enumerate(result.questions, start=1):
+            prompt = str(q.get("prompt") or "")
+            options = q.get("options") or []
+            if not prompt or not isinstance(options, list):
+                continue
+            question_lines.append(f"{idx}) {prompt}")
+            for opt_idx, opt in enumerate(options[:3], start=1):
+                question_lines.append(f"   {chr(64 + opt_idx)}. {str(opt)}")
+        question_text = "❓ Clarification questions:\n" + "\n".join(question_lines)
+        await log_dev_event(
+            bug_data.bug_id,
+            "clarify_ticket",
+            question_text,
+            "warning",
+            workflow_id,
+        )
+        payload_msg = "CLARIFICATION_FORM_JSON: " + json.dumps(
+            {
+                "questions": result.questions,
+                "required_answers": result.required_answers,
+            },
+            ensure_ascii=True,
+        )
+        await log_dev_event(
+            bug_data.bug_id,
+            "clarify_ticket",
+            payload_msg,
+            "info",
+            workflow_id,
+        )
+
+    return result.dict()
 
 
 @activity.defn

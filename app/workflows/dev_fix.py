@@ -5,6 +5,7 @@ import logging
 from app.activities.dev_activities import (
     setup_repository,
     preflight_repository_check,
+    clarify_ticket,
     analyze_and_code,
     apply_trivial_test_change,
     verify_fix,
@@ -17,6 +18,24 @@ VERIFY_FIX_TIMEOUT_MINUTES = 15
 
 @workflow.defn
 class DevFixWorkflow:
+    def __init__(self) -> None:
+        self.clarification_submitted: bool = False
+        self.clarification_answers: list[str] = []
+
+    @workflow.signal
+    def submit_clarification(self, payload: dict) -> None:
+        answers_raw = payload.get("answers") if isinstance(payload, dict) else payload
+        answers: list[str] = []
+        if isinstance(answers_raw, str):
+            s = answers_raw.strip()
+            if s:
+                answers = [s]
+        elif isinstance(answers_raw, list):
+            answers = [str(a).strip() for a in answers_raw if str(a).strip()]
+        self.clarification_answers = answers
+        self.clarification_submitted = True
+        workflow.logger.info("Received clarification signal with %s answer item(s).", len(answers))
+
     @workflow.run
     async def run(self, bug_data: dict) -> dict:
         """
@@ -99,6 +118,59 @@ class DevFixWorkflow:
                 if not success:
                     logging.warning("[DevFix] Test mode: verify failed (e.g. pre-existing errors). Proceeding to PR anyway.")
             else:
+                logging.info("[DevFix] Step 1.6/5: Clarification gate")
+                clarification = await workflow.execute_activity(
+                    clarify_ticket,
+                    {
+                        "bug_data": input_data.dict(),
+                        "workflow_id": workflow_id,
+                    },
+                    start_to_close_timeout=timedelta(minutes=2),
+                )
+                if not bool((clarification or {}).get("ready_for_coding", False)):
+                    self.clarification_submitted = False
+                    self.clarification_answers = []
+                    logging.info("[DevFix] Waiting for clarification signal before coding...")
+                    try:
+                        await workflow.wait_condition(
+                            lambda: self.clarification_submitted,
+                            timeout=timedelta(hours=12),
+                        )
+                    except Exception:
+                        raise Exception("Clarification was requested but no response was submitted before timeout.")
+
+                    answers_block = "\n".join(f"- {a}" for a in self.clarification_answers if a.strip())
+                    enriched_description = (input_data.description or "").strip()
+                    if answers_block:
+                        enriched_description = (
+                            f"{enriched_description}\n\nClarification answers:\n{answers_block}".strip()
+                        )
+                    input_data = DevActionInput(
+                        bug_id=input_data.bug_id,
+                        title=input_data.title,
+                        description=enriched_description,
+                        category=input_data.category,
+                        status=input_data.status,
+                        module_hint=input_data.module_hint,
+                        path_hint=input_data.path_hint,
+                        labels=input_data.labels,
+                    )
+
+                    clarification_after_answers = await workflow.execute_activity(
+                        clarify_ticket,
+                        {
+                            "bug_data": input_data.dict(),
+                            "workflow_id": workflow_id,
+                            "clarification_answers": self.clarification_answers,
+                        },
+                        start_to_close_timeout=timedelta(minutes=2),
+                    )
+                    if not bool((clarification_after_answers or {}).get("ready_for_coding", False)):
+                        raise Exception(
+                            "Clarification remains insufficient for coding. "
+                            "Please provide concrete target area and expected outcome."
+                        )
+
                 # Normal: Code & Verify loop
                 max_attempts = 3
                 fix_successful = False
