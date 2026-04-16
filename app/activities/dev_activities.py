@@ -927,6 +927,38 @@ def _is_only_ui_changes(modified_files: List[str]) -> bool:
     return len(modified_files) > 0 and all(_is_ui_path(p) for p in modified_files)
 
 
+def _is_functional_change_path(path: str) -> bool:
+    """
+    True when a changed path likely represents product behavior/schema changes
+    rather than tooling-only metadata.
+    """
+    p = path.replace("\\", "/").strip().lstrip("./")
+    if not p:
+        return False
+
+    tooling_only_files = {
+        "package-lock.json",
+        "bun.lockb",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        ".npmrc",
+        ".nvmrc",
+    }
+    if p in tooling_only_files:
+        return False
+
+    functional_prefixes = (
+        "src/",
+        "static/",
+        "migrations/",
+        "supabase/migrations/",
+        "db/migrations/",
+        "database/migrations/",
+        "prisma/migrations/",
+    )
+    return p.startswith(functional_prefixes)
+
+
 def _scope_observations(modified_files: List[str], bug_data: Optional[DevActionInput]) -> List[str]:
     """Return advisory scope observations for UI-scoped hints (non-blocking)."""
     if not bug_data or not _is_ui_category(bug_data.category):
@@ -1307,6 +1339,22 @@ async def verify_fix(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
                 "warning",
                 workflow_id,
             )
+        functional_changes = [p for p in modified if _is_functional_change_path(p)]
+        if not functional_changes:
+            changed_text = ", ".join(modified[:20]) if modified else "(none)"
+            no_source_msg = (
+                "No functional/source files were modified. "
+                "Only tooling/metadata changes detected: "
+                + changed_text
+            )
+            await log_dev_event(
+                bug_id,
+                "verify_fix",
+                "❌ " + no_source_msg[:2000],
+                "error",
+                workflow_id,
+            )
+            return False, no_source_msg
 
         completeness_warnings = _functional_completeness_warnings(modified, bug_data)
         if completeness_warnings:

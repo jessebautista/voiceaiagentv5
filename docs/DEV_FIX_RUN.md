@@ -113,6 +113,7 @@ Related toggles:
 
 Runtime logs now include active verify mode at the start of each `verify_fix` run.
 Runtime logs may also include non-blocking scope observations when ticket hints and changed files diverge.
+Additionally, verify fails when no functional/source files are modified (for example, lockfile-only changes) to prevent false-positive handoffs.
 
 ### Schema audit before coding
 
