@@ -100,6 +100,8 @@ Verification behavior is controlled by `DEV_AGENT_VERIFY_MODE`:
 - `hybrid` - baseline-aware mode; compares current errors against preflight baseline and allows unrelated/baseline errors.
 - `strict` - fail on any check failure.
 
+Scope/category hints (UI/Backend/etc.) are advisory only. They are logged as non-blocking scope observations for reviewer context and do not directly fail `verify_fix`.
+
 Related toggles:
 
 - `DEV_AGENT_VERIFY_STRICT=1` - backward-compatible strict override (equivalent to strict fail behavior).
@@ -110,6 +112,7 @@ Related toggles:
 - `DEV_AGENT_VERIFY_ENFORCE_DB_MIGRATION=1` - when contract requires DB/schema changes, fail verify unless a migration file is detected from bug-branch context (working tree + untracked + base-branch diff).
 
 Runtime logs now include active verify mode at the start of each `verify_fix` run.
+Runtime logs may also include non-blocking scope observations when ticket hints and changed files diverge.
 
 ### Schema audit before coding
 

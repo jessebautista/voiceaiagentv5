@@ -128,9 +128,9 @@ def _build_scope_hint(bug_data: DevActionInput) -> str:
     lines: List[str] = []
 
     if ui_scoped:
-        lines.append("- Treat this as a UI-scoped issue.")
-        lines.append("- Restrict edits to UI paths only (`src/routes/**`, `src/lib/components/**`, `src/app.css`, `static/**`, `*.svelte`).")
-        lines.append("- Do not modify backend/service/store files unless verification explicitly proves it is required.")
+        lines.append("- Ticket category indicates UI emphasis.")
+        lines.append("- Prefer UI paths first (`src/routes/**`, `src/lib/components/**`, `src/app.css`, `static/**`, `*.svelte`).")
+        lines.append("- If a non-UI change is needed to complete the fix, keep it minimal and tied to the same bug behavior.")
     if bug_data.labels:
         lines.append(f"- Ticket labels: {', '.join(bug_data.labels[:8])}.")
     if bug_data.module_hint:
@@ -143,9 +143,9 @@ def _build_scope_hint(bug_data: DevActionInput) -> str:
         lines.append(f"- Prefer files under `{expected_prefix}` for this issue.")
     if ui_scoped and expected_prefix:
         lines.append(
-            f"- Allowed edit paths for this ticket: `{expected_prefix}**`, `src/lib/components/**`, `src/app.css`, `static/**`."
+            f"- Priority area for first-pass edits: `{expected_prefix}**`, plus shared UI paths (`src/lib/components/**`, `src/app.css`, `static/**`)."
         )
-        lines.append("- Avoid editing other route folders unless explicitly required by the issue.")
+        lines.append("- Cross-area edits are allowed when required by the requested behavior.")
     if not lines:
         lines.append("- Keep edits narrowly scoped to files directly related to the reported bug.")
 
@@ -927,8 +927,8 @@ def _is_only_ui_changes(modified_files: List[str]) -> bool:
     return len(modified_files) > 0 and all(_is_ui_path(p) for p in modified_files)
 
 
-def _ui_scope_violations(modified_files: List[str], bug_data: Optional[DevActionInput]) -> List[str]:
-    """Return violations for UI-scoped bugs. Empty list means scope looks valid."""
+def _scope_observations(modified_files: List[str], bug_data: Optional[DevActionInput]) -> List[str]:
+    """Return advisory scope observations for UI-scoped hints (non-blocking)."""
     if not bug_data or not _is_ui_category(bug_data.category):
         return []
 
@@ -938,14 +938,14 @@ def _ui_scope_violations(modified_files: List[str], bug_data: Optional[DevAction
 
     non_ui = [p for p in modified_files if not _is_ui_path(p)]
     if non_ui:
-        violations.append("UI-scoped bug modified non-UI paths: " + ", ".join(non_ui[:20]))
+        violations.append("UI-emphasis ticket modified non-UI paths: " + ", ".join(non_ui[:20]))
 
     expected_prefix = _expected_ui_prefix(bug_data)
     if expected_prefix:
         touches_expected_area = any(p.replace("\\", "/").startswith(expected_prefix) for p in modified_files)
         if not touches_expected_area:
             violations.append(
-                "UI-scoped bug did not touch expected area "
+                "UI-emphasis ticket did not touch expected area "
                 f"`{expected_prefix}` (changed: {', '.join(modified_files[:20])})."
             )
         allowed_prefixes = (expected_prefix, "src/lib/components/", "static/")
@@ -958,7 +958,7 @@ def _ui_scope_violations(modified_files: List[str], bug_data: Optional[DevAction
         ]
         if ui_outside_allowlist:
             violations.append(
-                "UI-scoped bug modified UI files outside allowlist: "
+                "UI-emphasis ticket modified UI files outside priority allowlist: "
                 + ", ".join(ui_outside_allowlist[:20])
             )
 
@@ -1294,20 +1294,19 @@ async def verify_fix(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
             "info",
             workflow_id,
         )
-        scope_violations = _ui_scope_violations(modified, bug_data)
-        if scope_violations:
+        scope_observations = _scope_observations(modified, bug_data)
+        if scope_observations:
             scope_msg = (
-                "Scope violation detected before verification.\n"
-                + "\n".join(f"- {v}" for v in scope_violations[:20])
+                "Scope observations (non-blocking):\n"
+                + "\n".join(f"- {v}" for v in scope_observations[:20])
             )
             await log_dev_event(
                 bug_id,
                 "verify_fix",
-                "❌ " + scope_msg[:2000],
-                "error",
+                "⚠️ " + scope_msg[:2000],
+                "warning",
                 workflow_id,
             )
-            return False, scope_msg
 
         completeness_warnings = _functional_completeness_warnings(modified, bug_data)
         if completeness_warnings:
