@@ -120,6 +120,8 @@ class ClarificationSubmitRequest(BaseModel):
     bug_id: int
     workflow_id: str
     answers: List[str] | str
+    image_reference_mode: Optional[str] = None
+    reference_attachment_id: Optional[int] = None
 
 
 _DB_APPLY_GUARD_LOCK = Lock()
@@ -853,7 +855,14 @@ async def dev_fix_submit_clarification(body: ClarificationSubmitRequest):
     from app.workflows.dev_fix import DevFixWorkflow
     try:
         handle = client.get_workflow_handle(body.workflow_id)
-        await handle.signal(DevFixWorkflow.submit_clarification, {"answers": answers})
+        await handle.signal(
+            DevFixWorkflow.submit_clarification,
+            {
+                "answers": answers,
+                "image_reference_mode": body.image_reference_mode,
+                "reference_attachment_id": body.reference_attachment_id,
+            },
+        )
     except Exception as e:
         logger.error("Failed to signal clarification for workflow %s: %s", body.workflow_id, e)
         raise HTTPException(status_code=500, detail="Failed to signal clarification. Is the workflow running?")
@@ -864,11 +873,16 @@ async def dev_fix_submit_clarification(body: ClarificationSubmitRequest):
 
         supabase = get_supabase_client("DEV_AGENT")
         if supabase:
+            image_note = ""
+            if body.image_reference_mode:
+                image_note = f" image_mode={body.image_reference_mode!r}"
+            if body.reference_attachment_id:
+                image_note += f" attachment_id={body.reference_attachment_id}"
             _insert_dev_log(
                 supabase,
                 bug_id=body.bug_id,
                 step="clarify_ticket",
-                message=f"📝 Clarification answers submitted ({len(answers)} item(s)); resuming workflow.",
+                message=f"📝 Clarification answers submitted ({len(answers)} item(s)); resuming workflow.{image_note}",
                 level="info",
                 workflow_id=body.workflow_id,
             )

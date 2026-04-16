@@ -21,20 +21,41 @@ class DevFixWorkflow:
     def __init__(self) -> None:
         self.clarification_submitted: bool = False
         self.clarification_answers: list[str] = []
+        self.clarification_image_reference_mode: str | None = None
+        self.clarification_reference_attachment_id: int | None = None
 
     @workflow.signal
     def submit_clarification(self, payload: dict) -> None:
         answers_raw = payload.get("answers") if isinstance(payload, dict) else payload
         answers: list[str] = []
+        image_reference_mode: str | None = None
+        reference_attachment_id: int | None = None
         if isinstance(answers_raw, str):
             s = answers_raw.strip()
             if s:
                 answers = [s]
         elif isinstance(answers_raw, list):
             answers = [str(a).strip() for a in answers_raw if str(a).strip()]
+        if isinstance(payload, dict):
+            mode_raw = payload.get("image_reference_mode")
+            if isinstance(mode_raw, str) and mode_raw.strip():
+                image_reference_mode = mode_raw.strip()
+            rid_raw = payload.get("reference_attachment_id")
+            try:
+                if rid_raw is not None and str(rid_raw).strip() != "":
+                    reference_attachment_id = int(rid_raw)
+            except Exception:
+                reference_attachment_id = None
         self.clarification_answers = answers
+        self.clarification_image_reference_mode = image_reference_mode
+        self.clarification_reference_attachment_id = reference_attachment_id
         self.clarification_submitted = True
-        workflow.logger.info("Received clarification signal with %s answer item(s).", len(answers))
+        workflow.logger.info(
+            "Received clarification signal with %s answer item(s), image_mode=%s, attachment_id=%s.",
+            len(answers),
+            image_reference_mode or "(none)",
+            reference_attachment_id if reference_attachment_id is not None else "(none)",
+        )
 
     @workflow.run
     async def run(self, bug_data: dict) -> dict:
@@ -130,6 +151,8 @@ class DevFixWorkflow:
                 if not bool((clarification or {}).get("ready_for_coding", False)):
                     self.clarification_submitted = False
                     self.clarification_answers = []
+                    self.clarification_image_reference_mode = None
+                    self.clarification_reference_attachment_id = None
                     logging.info("[DevFix] Waiting for clarification signal before coding...")
                     try:
                         await workflow.wait_condition(
@@ -144,6 +167,14 @@ class DevFixWorkflow:
                     if answers_block:
                         enriched_description = (
                             f"{enriched_description}\n\nClarification answers:\n{answers_block}".strip()
+                        )
+                    if self.clarification_image_reference_mode:
+                        enriched_description = (
+                            f"{enriched_description}\n\nImage reference mode: {self.clarification_image_reference_mode}".strip()
+                        )
+                    if self.clarification_reference_attachment_id is not None:
+                        enriched_description = (
+                            f"{enriched_description}\nReference attachment id: {self.clarification_reference_attachment_id}".strip()
                         )
                     input_data = DevActionInput(
                         bug_id=input_data.bug_id,
@@ -186,6 +217,8 @@ class DevFixWorkflow:
                                 "bug_data": input_data.dict(),
                                 "last_error": last_error,
                                 "workflow_id": workflow_id,
+                                "image_reference_mode": self.clarification_image_reference_mode,
+                                "reference_attachment_id": self.clarification_reference_attachment_id,
                             },
                             start_to_close_timeout=timedelta(minutes=30),
                             heartbeat_timeout=timedelta(minutes=5),

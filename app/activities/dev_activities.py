@@ -2,6 +2,7 @@ from temporalio import activity
 import os
 import re
 import json
+import base64
 import socket
 import tempfile
 import subprocess
@@ -892,6 +893,223 @@ async def clarify_ticket(config: Dict[str, Any]) -> Dict[str, Any]:
     return result.dict()
 
 
+def _normalize_attachment_path(path: str) -> str:
+    p = (path or "").replace("\\", "/").strip()
+    if p.startswith("bug-attachments/"):
+        p = p[len("bug-attachments/"):]
+    return p.lstrip("./")
+
+
+def _looks_like_image_attachment(file_name: str, mime_type: Optional[str]) -> bool:
+    mt = (mime_type or "").lower()
+    if mt.startswith("image/"):
+        return True
+    name = (file_name or "").lower()
+    return name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"))
+
+
+def _extract_storage_url(obj: Any) -> Optional[str]:
+    if isinstance(obj, str) and obj.strip():
+        return obj.strip()
+    if isinstance(obj, dict):
+        data = obj.get("data")
+        if isinstance(data, dict):
+            for key in ("publicUrl", "signedUrl", "url"):
+                val = data.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+        for key in ("publicUrl", "signedUrl", "url"):
+            val = obj.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    return None
+
+
+def _download_attachment_bytes(supabase: Any, bucket: str, file_path: str) -> Optional[bytes]:
+    path = _normalize_attachment_path(file_path)
+    if not path:
+        return None
+    try:
+        raw = supabase.storage.from_(bucket).download(path)
+        if isinstance(raw, (bytes, bytearray)) and raw:
+            return bytes(raw)
+        if isinstance(raw, dict):
+            data = raw.get("data")
+            if isinstance(data, (bytes, bytearray)) and data:
+                return bytes(data)
+    except Exception:
+        pass
+
+    try:
+        signed = supabase.storage.from_(bucket).create_signed_url(path, 600)
+        signed_url = _extract_storage_url(signed)
+        if signed_url:
+            import httpx
+            resp = httpx.get(signed_url, timeout=20.0)
+            if resp.status_code == 200 and resp.content:
+                return resp.content
+    except Exception:
+        pass
+
+    try:
+        public_obj = supabase.storage.from_(bucket).get_public_url(path)
+        public_url = _extract_storage_url(public_obj)
+        if public_url:
+            import httpx
+            resp = httpx.get(public_url, timeout=20.0)
+            if resp.status_code == 200 and resp.content:
+                return resp.content
+    except Exception:
+        pass
+    return None
+
+
+def _analyze_image_reference_for_bug(
+    bug_id: int,
+    workflow_id: Optional[str],
+    image_reference_mode: Optional[str],
+    reference_attachment_id: Optional[int],
+) -> Dict[str, Any]:
+    """
+    Analyze a selected bug attachment image using the configured Anthropic model.
+    Returns structured metadata and a short summary for prompt injection.
+    """
+    mode = (image_reference_mode or "").strip()
+    if not mode or mode.lower().startswith("skip image reference"):
+        return {"used": False, "reason": "image_reference_skipped"}
+
+    from app.supabase_client import get_supabase_client
+
+    supabase = get_supabase_client("DEV_AGENT")
+    if not supabase:
+        return {"used": False, "reason": "supabase_not_configured"}
+
+    try:
+        query = (
+            supabase.from_("phwb_bug_attachments")
+            .select("id,file_name,file_path,mime_type,created_at")
+            .eq("bug_id", bug_id)
+            .order("created_at", desc=True)
+            .limit(50)
+        )
+        rows = getattr(query.execute(), "data", None) or []
+    except Exception as e:
+        return {"used": False, "reason": f"attachment_lookup_failed:{str(e)[:120]}"}
+
+    if not isinstance(rows, list) or not rows:
+        return {"used": False, "reason": "no_attachments_found"}
+
+    selected: Optional[Dict[str, Any]] = None
+    if reference_attachment_id is not None:
+        for row in rows:
+            try:
+                if int(row.get("id")) == int(reference_attachment_id):
+                    selected = row
+                    break
+            except Exception:
+                continue
+
+    if selected is None:
+        for row in rows:
+            if _looks_like_image_attachment(str(row.get("file_name") or ""), row.get("mime_type")):
+                selected = row
+                break
+    if selected is None:
+        selected = rows[0]
+
+    file_path = str(selected.get("file_path") or "")
+    file_name = str(selected.get("file_name") or "")
+    mime_type = str(selected.get("mime_type") or "").strip() or "image/png"
+    if not mime_type.startswith("image/"):
+        if file_name.lower().endswith(".jpg") or file_name.lower().endswith(".jpeg"):
+            mime_type = "image/jpeg"
+        elif file_name.lower().endswith(".webp"):
+            mime_type = "image/webp"
+        elif file_name.lower().endswith(".gif"):
+            mime_type = "image/gif"
+        else:
+            mime_type = "image/png"
+
+    image_bytes = _download_attachment_bytes(supabase, "bug-attachments", file_path)
+    if not image_bytes:
+        return {
+            "used": False,
+            "reason": "attachment_download_failed",
+            "attachment_id": selected.get("id"),
+            "file_name": file_name,
+        }
+
+    # Keep request safe and bounded for model API.
+    max_bytes = 5 * 1024 * 1024
+    if len(image_bytes) > max_bytes:
+        return {
+            "used": False,
+            "reason": f"attachment_too_large:{len(image_bytes)}",
+            "attachment_id": selected.get("id"),
+            "file_name": file_name,
+        }
+
+    api_key = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
+    if not api_key:
+        return {"used": False, "reason": "anthropic_api_key_missing"}
+
+    model_name = (os.getenv("DEV_AGENT_MODEL_DEFAULT") or "claude-sonnet-4-6").strip()
+    try:
+        from anthropic import Anthropic
+
+        client = Anthropic(api_key=api_key)
+        image_b64 = base64.b64encode(image_bytes).decode("ascii")
+        response = client.messages.create(
+            model=model_name,
+            max_tokens=500,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": mime_type,
+                                "data": image_b64,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": (
+                                "Analyze this bug reference image for UI implementation guidance. "
+                                "Return concise bullet points covering: target component/area, visual hierarchy/layout, "
+                                "text/labels visible, spacing/alignment/style cues, and any behavioral clues implied by the UI."
+                            ),
+                        },
+                    ],
+                }
+            ],
+        )
+        text_blocks = [b.text for b in response.content if getattr(b, "type", "") == "text"]
+        summary = " ".join(text_blocks).strip()
+        if not summary:
+            return {"used": False, "reason": "vision_empty_summary", "attachment_id": selected.get("id")}
+
+        return {
+            "used": True,
+            "summary": summary[:2400],
+            "attachment_id": selected.get("id"),
+            "file_name": file_name,
+            "mime_type": mime_type,
+            "model": model_name,
+            "mode": mode,
+        }
+    except Exception as e:
+        return {
+            "used": False,
+            "reason": f"vision_failed:{str(e)[:160]}",
+            "attachment_id": selected.get("id"),
+            "file_name": file_name,
+            "model": model_name,
+        }
+
+
 @activity.defn
 async def analyze_and_code(config: Dict[str, Any]) -> None:
     """Invokes the LangChain LLM to analyze the bug and write code changes (harness: repo as source of truth, progressive disclosure)."""
@@ -900,6 +1118,14 @@ async def analyze_and_code(config: Dict[str, Any]) -> None:
     bug_data = DevActionInput(**config["bug_data"])
     last_error = config.get("last_error")
     workflow_id = config.get("workflow_id")
+    image_reference_mode = str(config.get("image_reference_mode") or "").strip() or None
+    reference_attachment_id: Optional[int] = None
+    try:
+        rid_raw = config.get("reference_attachment_id")
+        if rid_raw is not None and str(rid_raw).strip() != "":
+            reference_attachment_id = int(rid_raw)
+    except Exception:
+        reference_attachment_id = None
 
     from app.agents.dev_agent import run_dev_agent
 
@@ -934,7 +1160,47 @@ async def analyze_and_code(config: Dict[str, Any]) -> None:
         workflow_id,
     )
 
+    visual_reference = _analyze_image_reference_for_bug(
+        bug_id=bug_data.bug_id,
+        workflow_id=workflow_id,
+        image_reference_mode=image_reference_mode,
+        reference_attachment_id=reference_attachment_id,
+    )
+    if visual_reference.get("used"):
+        await log_dev_event(
+            bug_data.bug_id,
+            "analyze_and_code",
+            (
+                "🖼️ Visual reference analyzed: "
+                f"attachment_id={visual_reference.get('attachment_id')} "
+                f"file={visual_reference.get('file_name')} "
+                f"model={visual_reference.get('model')}"
+            ),
+            "info",
+            workflow_id,
+        )
+    elif image_reference_mode and not image_reference_mode.lower().startswith("skip image reference"):
+        await log_dev_event(
+            bug_data.bug_id,
+            "analyze_and_code",
+            (
+                "⚠️ Visual reference could not be analyzed; continuing without image guidance. "
+                f"reason={visual_reference.get('reason')}"
+            ),
+            "warning",
+            workflow_id,
+        )
+
     prompt = _build_dev_fix_instruction(repo_path, bug_data, last_error, schema_audit=schema_audit)
+    if visual_reference.get("used") and visual_reference.get("summary"):
+        prompt += (
+            "\n\n## Visual Reference Guidance (must consider)\n"
+            f"- Image reference mode: {image_reference_mode or '(unspecified)'}\n"
+            f"- Attachment id: {visual_reference.get('attachment_id')}\n"
+            f"- Attachment file: {visual_reference.get('file_name')}\n"
+            "Use the following visual observations as implementation constraints when relevant:\n"
+            f"{visual_reference.get('summary')}\n"
+        )
     if last_error:
         await log_dev_event(bug_data.bug_id, "analyze_and_code", "🔁 Retry: using previous verification error as context.", "warning", workflow_id)
         logging.info("[analyze_and_code] Retry with last_error context")
